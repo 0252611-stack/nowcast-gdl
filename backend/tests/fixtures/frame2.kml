@@ -1,0 +1,24 @@
+<kml xmlns="http://earth.google.com/kml/2.2" >
+ <Folder>
+  <name>MEX-Filtered Intensity(Horizontal)-Thu Jun 11 03:50:44 2026</name>
+  <ExtendedData xmlns:edge="http://eecradar.com" >
+   <edge:Moment>Filtered Intensity(Horizontal)</edge:Moment>
+   <edge:MomentAbbreviation>ZH</edge:MomentAbbreviation>
+  </ExtendedData>
+  <lookAt>
+   <longitude>-103.3858337402344</longitude>
+   <latitude>20.67555618286133</latitude>
+  </lookAt>
+  <GroundOverlay>
+   <Icon>
+    <href>MEX_ZH_1781149844_1781149910.png</href>
+   </Icon>
+   <LatLonBox>
+    <north>22.03030437021881</north>
+    <south>19.32059531316582</south>
+    <east>-101.9462411978663</east>
+    <west>-104.8254262826025</west>
+   </LatLonBox>
+  </GroundOverlay>
+ </Folder>
+</kml>
