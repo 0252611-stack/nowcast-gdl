@@ -70,7 +70,7 @@ async def fetch_forecast(
         "longitude": lon,
         "hourly": _HOURLY_VARS,
         "timezone": "America/Mexico_City",
-        "forecast_days": 1,
+        "forecast_hours": _MAX_HOURS,
     }
 
     data = await _get_with_retry(client, _BASE_URL, params)

@@ -177,8 +177,17 @@ export default function PointCard({ point, forecast, radar, nowcast, loading = f
       </div>
     )
   }
-  // Hora más próxima del pronóstico
-  const nearest = forecast?.hourly?.[0] ?? null
+  // Entrada horaria más cercana a ahora (última cuyo time <= now)
+  const nearest = (() => {
+    const hourly = forecast?.hourly
+    if (!hourly?.length) return null
+    const now = Date.now()
+    let best = hourly[0]
+    for (const h of hourly) {
+      if (new Date(h.time).getTime() <= now) best = h
+    }
+    return best
+  })()
   const radarAvailable = radar !== null && radar !== undefined
 
   return (
