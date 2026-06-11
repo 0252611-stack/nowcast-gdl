@@ -51,17 +51,41 @@ const styles = {
   }),
 }
 
-export default function RadarStatus({ reading, available }) {
+export default function RadarStatus({ reading, available, rainviewerUrl }) {
   if (!available || reading === null) {
     return (
-      <span style={styles.unavailable}>
-        <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-          <circle cx="6" cy="6" r="5" stroke="#64748b" strokeWidth="1.5"/>
-          <line x1="4" y1="4" x2="8" y2="8" stroke="#64748b" strokeWidth="1.5" strokeLinecap="round"/>
-          <line x1="8" y1="4" x2="4" y2="8" stroke="#64748b" strokeWidth="1.5" strokeLinecap="round"/>
-        </svg>
-        Radar no disponible
-      </span>
+      <div style={{ display: "flex", flexDirection: "column", gap: "6px", alignItems: "flex-end" }}>
+        <span style={styles.unavailable}>
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+            <circle cx="6" cy="6" r="5" stroke="#64748b" strokeWidth="1.5"/>
+            <line x1="4" y1="4" x2="8" y2="8" stroke="#64748b" strokeWidth="1.5" strokeLinecap="round"/>
+            <line x1="8" y1="4" x2="4" y2="8" stroke="#64748b" strokeWidth="1.5" strokeLinecap="round"/>
+          </svg>
+          Radar no disponible
+        </span>
+        {rainviewerUrl && (
+          <a
+            href={rainviewerUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            title="Radar regional vía RainViewer"
+          >
+            <img
+              src={rainviewerUrl}
+              alt="Radar regional (RainViewer)"
+              style={{
+                width: "80px",
+                height: "80px",
+                borderRadius: "6px",
+                border: "1px solid #334155",
+                opacity: 0.9,
+                display: "block",
+              }}
+              onError={(e) => { e.target.parentElement.style.display = "none" }}
+            />
+          </a>
+        )}
+      </div>
     )
   }
 

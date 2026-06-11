@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from contextlib import asynccontextmanager
 
 import httpx
@@ -14,7 +15,10 @@ from app import config
 from app.nowcast.engine import estimate_arrival
 from app.scheduler import RadarState, run_forecast_loop, run_radar_loop
 from app.sources.openmeteo import fetch_forecast
+from app.sources.rainviewer import fetch_tile_url as fetch_rainviewer_url
 from app.storage import get_latest_reading, get_recent_frames, get_skill_metrics, init_db
+
+_RAINVIEWER_TTL = 300.0  # segundos entre llamadas a RainViewer
 
 log = logging.getLogger(__name__)
 
@@ -27,6 +31,8 @@ async def lifespan(app: FastAPI):
     forecast_task = asyncio.create_task(run_forecast_loop(config.POINTS))
     app.state.db = conn
     app.state.radar_state = state
+    app.state.rainviewer_url: str | None = None
+    app.state.rainviewer_url_ts: float = 0.0
     log.info("Nowcast GDL iniciado. Scheduler activo.")
     try:
         yield
@@ -83,17 +89,27 @@ async def get_radar(point_id: str):
     state: RadarState = app.state.radar_state
     reading = get_latest_reading(app.state.db, point_id)
     nowcast = None
-    try:
-        frames = get_recent_frames(app.state.db, 2)
-        async with httpx.AsyncClient(
-            headers={"User-Agent": config.USER_AGENT}, timeout=10
-        ) as client:
+    rainviewer_url = None
+    async with httpx.AsyncClient(
+        headers={"User-Agent": config.USER_AGENT}, timeout=10
+    ) as client:
+        try:
+            frames = get_recent_frames(app.state.db, 2)
             forecast = await fetch_forecast(client, pt["id"], pt["name"], pt["lat"], pt["lon"])
-        nowcast = estimate_arrival(point_id, reading, forecast, frames, state.last_bounds)
-    except Exception as exc:
-        log.warning("Nowcast engine falló para %s: %s", point_id, exc)
+            nowcast = estimate_arrival(point_id, reading, forecast, frames, state.last_bounds)
+        except Exception as exc:
+            log.warning("Nowcast engine falló para %s: %s", point_id, exc)
+
+        if not state.available:
+            now = time.monotonic()
+            if app.state.rainviewer_url is None or now - app.state.rainviewer_url_ts > _RAINVIEWER_TTL:
+                app.state.rainviewer_url = await fetch_rainviewer_url(client, pt["lat"], pt["lon"])
+                app.state.rainviewer_url_ts = now
+            rainviewer_url = app.state.rainviewer_url
+
     return {
         "radar": reading,
         "radar_available": state.available,
         "nowcast": nowcast,
+        "rainviewer_url": rainviewer_url,
     }

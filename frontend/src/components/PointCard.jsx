@@ -158,7 +158,7 @@ const s = {
   }),
 }
 
-export default function PointCard({ point, forecast, radar, nowcast, loading = false }) {
+export default function PointCard({ point, forecast, radar, nowcast, rainviewerUrl, loading = false }) {
   if (loading) {
     return (
       <div style={{ ...s.card, padding: "18px" }}>
@@ -198,7 +198,7 @@ export default function PointCard({ point, forecast, radar, nowcast, loading = f
           <span style={s.pointName}>{point.name}</span>
           <span style={s.coords}>{point.lat.toFixed(4)}° N, {Math.abs(point.lon).toFixed(4)}° O</span>
         </div>
-        <RadarStatus reading={radar} available={radarAvailable} />
+        <RadarStatus reading={radar} available={radarAvailable} rainviewerUrl={rainviewerUrl} />
       </div>
 
       {/* ---- Body ---- */}

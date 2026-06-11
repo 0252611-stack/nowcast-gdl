@@ -34,6 +34,7 @@ export default function App() {
   const [nowcasts, setNowcasts] = useState({})
   const [generatedAt, setGeneratedAt] = useState(null)
   const [skillMetrics, setSkillMetrics] = useState(null)
+  const [rainviewerUrls, setRainviewerUrls] = useState({})
 
   const loadRealData = useCallback(async () => {
     const pts = await getPoints()
@@ -49,15 +50,18 @@ export default function App() {
     const newForecasts = {}
     const newRadars = {}
     const newNowcasts = {}
+    const newRainviewerUrls = {}
     for (const { pt, forecast, radarResp } of results) {
       newForecasts[pt.id] = forecast
       newRadars[pt.id] = radarResp.radar
       newNowcasts[pt.id] = radarResp.nowcast ?? null
+      newRainviewerUrls[pt.id] = radarResp.rainviewer_url ?? null
     }
     setPoints(pts)
     setForecasts(newForecasts)
     setRadars(newRadars)
     setNowcasts(newNowcasts)
+    setRainviewerUrls(newRainviewerUrls)
     setGeneratedAt(new Date().toISOString())
     setUseMock(false)
     try {
@@ -171,6 +175,7 @@ export default function App() {
                   forecast={forecasts[point.id]}
                   radar={radars[point.id]}
                   nowcast={nowcasts[point.id]}
+                  rainviewerUrl={rainviewerUrls[point.id]}
                   loading={loading && !forecasts[point.id]}
                 />
               ))}
