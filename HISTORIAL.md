@@ -277,3 +277,51 @@ Coordenadas verificadas en Google Maps y actualizadas en `backend/app/config.py`
 
 **Pendiente:**
 - Calibración con lluvia real de temporada
+
+---
+
+### Rediseño UI — Tema claro + etiquetas de fuente + anti-slop ✅ — 12 jun 2026
+
+**Objetivo:** Migrar de tema oscuro a tema claro profesional, mostrar la fuente
+de cada dato, y eliminar patrones de "AI slop" identificados en investigación.
+
+**Entregado:**
+
+**Infraestructura de diseño:**
+- `frontend/src/theme.js` (nuevo) — tokens semánticos centralizados:
+  fondo `#FAFAFA`, tarjetas `#FFFFFF`, primario `#1E40AF`, acento `#D97706`;
+  un solo lugar con hex, todos los componentes importan de aquí
+- `frontend/src/index.css` — variables CSS actualizadas a la paleta clara;
+  `color-scheme: light`; tipografía base Fira Sans + Fira Code
+- `frontend/index.html` — Google Fonts: Fira Sans (300–700) + Fira Code (400–600)
+  con `preconnect` y `display=swap`
+
+**Etiquetas de fuente:**
+- `frontend/src/components/SourceTag.jsx` (nuevo) — caption "● Open-Meteo",
+  "● Radar IAM-UdeG", "● Motor Nowcast", "● RainViewer" bajo cada dato;
+  punto de color + texto (no solo color, cumple `color-not-only`)
+
+**Iconos SVG:**
+- `frontend/src/components/Icons.jsx` (nuevo) — 7 íconos stroke-based
+  (SunIcon, CloudRainIcon, ClockIcon, DropletIcon, ThermometerIcon, WindIcon,
+  CloudIcon) en viewBox 24×24, mismo estilo que WindCompass
+
+**Componentes refactorizados (paleta clara + mejoras):**
+- `App.jsx` — chips de filtro con punto de color en vez de emoji 🌧/☀️
+- `PointCard.jsx` — sin ALL-CAPS labels; badges con border-radius cuadrado (8px)
+  en vez de pill; emojis → SVG; borde superior de color por estado de lluvia
+  (verde = lluvia activa, ámbar = ETA próxima — jerarquía funcional, no decorativa)
+- `RadarStatus.jsx` — CATEGORY_STYLES recalibrados para ≥4.5:1 sobre blanco
+- `WindCompass.jsx` — SVG a tema claro (flecha en `primary`, círculo en `surfaceMuted`)
+- `HourlyChart.jsx` — Recharts: grid claro, tooltip con SVG inline en vez de emoji
+- `MapView.jsx` + `AdminView.jsx` — paleta clara, th sin ALL-CAPS
+- `CellMap.jsx` — colores de marcadores/flechas/polyline via `theme`
+
+**Investigación anti-slop:**
+Análisis de ~1,600 páginas (Adrian Krebs) identificó 16 patrones de "AI slop".
+Score inicial: 2–3 patrones. Cambios aplicados:
+1. ALL-CAPS labels eliminados (patrón #16 — el más citado)
+2. Emojis funcionales → SVG consistentes (patrón de iconografía genérica)
+3. Grid de cards idénticas → jerarquía por borde superior de estado
+
+**Lint:** ✅ | **Build:** ✅ | **Deploy:** Vercel (push directo)
