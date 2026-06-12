@@ -53,19 +53,22 @@ async def _noop(*args, **kwargs):
 @pytest.fixture
 def client(tmp_path):
     from app.main import app
-    from app import storage
+    from app import storage, config
 
     conn = storage.init_db(tmp_path / "test.db")
     state = RadarState()
 
     with (
         patch("app.main.init_db", return_value=conn),
+        patch("app.main.seed_points"),
         patch("app.main.run_radar_loop", _noop),
         patch("app.main.run_forecast_loop", _noop),
     ):
         with TestClient(app, raise_server_exceptions=True) as c:
             app.state.db = conn
             app.state.radar_state = state
+            # Sembrar puntos en la DB de test para que los endpoints los encuentren
+            storage.seed_points(conn, config.POINTS)
             yield c, conn, state
 
 

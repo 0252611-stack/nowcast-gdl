@@ -5,6 +5,7 @@
 import RadarStatus from "./RadarStatus.jsx"
 import WindCompass from "./WindCompass.jsx"
 import HourlyChart from "./HourlyChart.jsx"
+import CellMap from "./CellMap.jsx"
 
 const s = {
   card: {
@@ -135,7 +136,7 @@ const s = {
     fontWeight: 600,
     marginBottom: "8px",
   },
-  confidenceBar: (confidence) => ({
+  confidenceBar: () => ({
     display: "flex",
     alignItems: "center",
     gap: "8px",
@@ -226,9 +227,23 @@ export default function PointCard({ point, forecast, radar, nowcast, rainviewerU
           )}
         </div>
 
+        {/* Mini-mapa del eco causante cuando hay ETA y posición del eco */}
+        {nowcast && nowcast.eta_minutes !== null && nowcast.cell_lat != null && (
+          <div style={s.section}>
+            <span style={s.label}>Nube causante</span>
+            <CellMap
+              points={[{ id: point.id, name: point.name, lat: point.lat, lon: point.lon }]}
+              nowcasts={{ [point.id]: nowcast }}
+              focusPoint={{ id: point.id, lat: point.lat, lon: point.lon }}
+              compact
+              height="160px"
+            />
+          </div>
+        )}
+
         {/* Confianza del nowcast */}
         {nowcast?.confidence !== null && nowcast?.confidence !== undefined && (
-          <div style={s.confidenceBar(nowcast.confidence)}>
+          <div style={s.confidenceBar()}>
             <span>Confianza</span>
             <div style={s.confidenceTrack}>
               <div style={s.confidenceFill(nowcast.confidence)} />

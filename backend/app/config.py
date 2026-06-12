@@ -31,6 +31,11 @@ ALLOWED_ORIGINS: list[str] = os.getenv(
     "ALLOWED_ORIGINS", "http://localhost:5173"
 ).split(",")
 
+# --- Admin ---
+# Definir ADMIN_TOKEN en la env var para habilitar endpoints de escritura.
+# Sin token configurado, los endpoints de escritura devuelven 503 (fail-closed).
+ADMIN_TOKEN: str | None = os.getenv("ADMIN_TOKEN")
+
 # --- Zonas horarias ---
 TZ_LOCAL = ZoneInfo("America/Mexico_City")
 TZ_UTC = ZoneInfo("UTC")

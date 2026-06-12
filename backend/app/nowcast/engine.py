@@ -112,5 +112,8 @@ def estimate_arrival(
         confidence=projection["confidence"],
         cell_speed_kmh=round(motion["speed_kmh"], 1),
         cell_bearing_deg=round(motion["bearing_deg"], 1),
+        cell_lat=round(nearest["cell_lat"], 6),
+        cell_lon=round(nearest["cell_lon"], 6),
+        bearing_cell_to_point_deg=round(nearest["bearing_cell_to_point_deg"], 1),
         method="advection",
     )

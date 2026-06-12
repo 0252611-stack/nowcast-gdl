@@ -1,10 +1,15 @@
 /**
- * Raíz de la app — grilla de PointCards para cada punto monitoreado.
- * Sprint 2: intenta conectarse al backend real; fallback a datos mock si no está disponible.
+ * Raíz de la app — layout principal con router.
+ * / → dashboard de PointCards
+ * /mapa → mapa interactivo Leaflet
+ * /admin → panel de administración
  */
 
 import { useState, useEffect, useCallback } from "react"
+import { Routes, Route, NavLink } from "react-router-dom"
 import PointCard from "./components/PointCard.jsx"
+import MapView from "./views/MapView.jsx"
+import AdminView from "./views/AdminView.jsx"
 import { getPoints, getForecast, getRadar, getMetrics } from "./api.js"
 import {
   MOCK_POINTS,
@@ -68,7 +73,7 @@ export default function App() {
       const m = await getMetrics()
       setSkillMetrics(m)
     } catch {
-      // métricas opcionales — no afectan el resto de la app
+      // métricas opcionales
     }
   }, [])
 
@@ -79,9 +84,7 @@ export default function App() {
     } catch {
       setPoints(MOCK_POINTS)
       setForecasts(MOCK_FORECASTS)
-      setRadars(Object.fromEntries(
-        Object.entries(MOCK_RADAR).map(([k, v]) => [k, v])
-      ))
+      setRadars(Object.fromEntries(Object.entries(MOCK_RADAR).map(([k, v]) => [k, v])))
       setNowcasts(MOCK_NOWCAST)
       setGeneratedAt("2026-06-10T20:05:00Z")
       setUseMock(true)
@@ -90,16 +93,11 @@ export default function App() {
     }
   }, [loadRealData])
 
-  useEffect(() => {
-    loadData()
-  }, [loadData])
+  useEffect(() => { loadData() }, [loadData])
 
-  // Auto-refresh cada 90 s cuando está en modo real
   useEffect(() => {
     if (useMock) return
-    const id = setInterval(() => {
-      loadRealData().catch(() => {})
-    }, REFRESH_INTERVAL_MS)
+    const id = setInterval(() => { loadRealData().catch(() => {}) }, REFRESH_INTERVAL_MS)
     return () => clearInterval(id)
   }, [useMock, loadRealData])
 
@@ -107,7 +105,7 @@ export default function App() {
 
   return (
     <div style={st.root}>
-      {/* Header */}
+      {/* ── Header ── */}
       <header style={st.header}>
         <div style={st.headerInner}>
           <div style={st.titleGroup}>
@@ -117,6 +115,19 @@ export default function App() {
             <p style={st.subtitle}>Pronóstico por puntos — Área Metropolitana de Guadalajara</p>
           </div>
           <div style={st.metaGroup}>
+            {/* Nav links */}
+            <nav style={st.navLinks}>
+              <NavLink to="/" end style={({ isActive }) => isActive ? st.navLinkActive : st.navLink}>
+                Inicio
+              </NavLink>
+              <NavLink to="/mapa" style={({ isActive }) => isActive ? st.navLinkActive : st.navLink}>
+                Mapa
+              </NavLink>
+              <NavLink to="/admin" style={({ isActive }) => isActive ? st.navLinkActive : st.navLink}>
+                Admin
+              </NavLink>
+            </nav>
+            {/* Badge online/offline — solo visible en home con datos */}
             {useMock ? (
               <div style={st.badgeMock}>
                 <span style={st.dot} /> Modo offline — datos mock
@@ -131,66 +142,73 @@ export default function App() {
         </div>
       </header>
 
-      {/* Nav filtro */}
-      <nav style={st.nav}>
-        <div style={st.navInner}>
-          {displayPoints.map((p) => {
-            const nowcast = nowcasts[p.id]
-            const isRaining = nowcast?.raining_now
-            return (
-              <button
-                key={p.id}
-                style={st.chip(selectedPoint === p.id, isRaining)}
-                onClick={() => setSelectedPoint(selectedPoint === p.id ? null : p.id)}
-              >
-                {isRaining ? "🌧 " : "☀️ "}{p.name}
-              </button>
-            )
-          })}
-          {selectedPoint && (
-            <button style={st.clearBtn} onClick={() => setSelectedPoint(null)}>
-              Mostrar todos
-            </button>
-          )}
-          {useMock && (
-            <button style={st.retryBtn} onClick={loadData}>
-              ↺ Reintentar
-            </button>
-          )}
-        </div>
-      </nav>
+      {/* ── Rutas ── */}
+      <Routes>
+        {/* Dashboard home */}
+        <Route path="/" element={
+          <>
+            {/* Filtro de puntos */}
+            <nav style={st.chipNav}>
+              <div style={st.chipNavInner}>
+                {displayPoints.map((p) => {
+                  const nowcast = nowcasts[p.id]
+                  const isRaining = nowcast?.raining_now
+                  return (
+                    <button
+                      key={p.id}
+                      style={st.chip(selectedPoint === p.id, isRaining)}
+                      onClick={() => setSelectedPoint(selectedPoint === p.id ? null : p.id)}
+                    >
+                      {isRaining ? "🌧 " : "☀️ "}{p.name}
+                    </button>
+                  )
+                })}
+                {selectedPoint && (
+                  <button style={st.clearBtn} onClick={() => setSelectedPoint(null)}>
+                    Mostrar todos
+                  </button>
+                )}
+                {useMock && (
+                  <button style={st.retryBtn} onClick={loadData}>
+                    ↺ Reintentar
+                  </button>
+                )}
+              </div>
+            </nav>
 
-      {/* Grid */}
-      <main style={st.main}>
-        {loading && displayPoints.length === 0 ? (
-          <div style={st.spinner}>Cargando datos…</div>
-        ) : (
-          <div style={st.grid}>
-            {displayPoints
-              .filter((p) => selectedPoint === null || p.id === selectedPoint)
-              .map((point) => (
-                <PointCard
-                  key={point.id}
-                  point={point}
-                  forecast={forecasts[point.id]}
-                  radar={radars[point.id]}
-                  nowcast={nowcasts[point.id]}
-                  rainviewerUrl={rainviewerUrls[point.id]}
-                  loading={loading && !forecasts[point.id]}
-                />
-              ))}
-          </div>
-        )}
-      </main>
+            {/* Grid de tarjetas */}
+            <main style={st.main}>
+              {loading && displayPoints.length === 0 ? (
+                <div style={st.spinner}>Cargando datos…</div>
+              ) : (
+                <div style={st.grid}>
+                  {displayPoints
+                    .filter((p) => selectedPoint === null || p.id === selectedPoint)
+                    .map((point) => (
+                      <PointCard
+                        key={point.id}
+                        point={point}
+                        forecast={forecasts[point.id]}
+                        radar={radars[point.id]}
+                        nowcast={nowcasts[point.id]}
+                        rainviewerUrl={rainviewerUrls[point.id]}
+                        loading={loading && !forecasts[point.id]}
+                      />
+                    ))}
+                </div>
+              )}
+            </main>
 
-      <footer style={st.footer}>
-        <p style={st.footerText}>
-          Nowcast GDL · Radar IAM-UdeG + Open-Meteo
-        </p>
-        {!useMock && (
-          <SkillBar metrics={skillMetrics} />
-        )}
-      </footer>
+            <footer style={st.footer}>
+              <p style={st.footerText}>Nowcast GDL · Radar IAM-UdeG + Open-Meteo</p>
+              {!useMock && <SkillBar metrics={skillMetrics} />}
+            </footer>
+          </>
+        } />
+
+        <Route path="/mapa" element={<MapView />} />
+        <Route path="/admin" element={<AdminView />} />
+      </Routes>
     </div>
   )
 }
@@ -207,7 +225,7 @@ function SkillBar({ metrics }) {
     )
   }
 
-  const fmt = (x) => x != null ? (x * 100).toFixed(0) + "%" : "—"
+  const fmt  = (x) => x != null ? (x * 100).toFixed(0) + "%" : "—"
   const fmtN = (x) => x != null ? x.toFixed(1) : "—"
 
   return (
@@ -218,9 +236,7 @@ function SkillBar({ metrics }) {
       {" · "}FAR {fmt(fo?.far)}
       {" · "}CSI {fmt(fo?.csi)}
       {" · "}n={v}
-      {fo?.mean_lead_error_min != null && (
-        <> · err {fmtN(fo.mean_lead_error_min)} min</>
-      )}
+      {fo?.mean_lead_error_min != null && <> · err {fmtN(fo.mean_lead_error_min)} min</>}
     </p>
   )
 }
@@ -232,13 +248,16 @@ const st = {
   titleGroup: { display: "flex", flexDirection: "column", gap: "2px" },
   title: { fontSize: "22px", fontWeight: 800, color: "#e2e8f0", letterSpacing: "-0.02em", display: "flex", alignItems: "center", gap: "8px" },
   subtitle: { fontSize: "13px", color: "#475569" },
-  metaGroup: { display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "4px" },
+  metaGroup: { display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "6px" },
+  navLinks: { display: "flex", gap: "4px" },
+  navLink: { padding: "4px 12px", borderRadius: "6px", fontSize: "13px", fontWeight: 600, color: "#64748b", textDecoration: "none", border: "1px solid transparent" },
+  navLinkActive: { padding: "4px 12px", borderRadius: "6px", fontSize: "13px", fontWeight: 600, color: "#38bdf8", textDecoration: "none", border: "1px solid #38bdf855", background: "#0c2a4a" },
   badgeMock: { display: "inline-flex", alignItems: "center", gap: "6px", padding: "4px 12px", borderRadius: "999px", background: "#422006", border: "1px solid #f9731655", color: "#f97316", fontSize: "12px", fontWeight: 600 },
   badgeLive: { display: "inline-flex", alignItems: "center", gap: "6px", padding: "4px 12px", borderRadius: "999px", background: "#052e16", border: "1px solid #22c55e55", color: "#22c55e", fontSize: "12px", fontWeight: 600 },
   dot: { display: "inline-block", width: "6px", height: "6px", borderRadius: "50%", background: "#f97316", animation: "pulse 2s infinite" },
   timestamp: { fontSize: "11px", color: "#475569" },
-  nav: { background: "#0f172a", borderBottom: "1px solid #1e293b" },
-  navInner: { maxWidth: "1280px", margin: "0 auto", padding: "10px 24px", display: "flex", flexWrap: "wrap", gap: "8px", alignItems: "center" },
+  chipNav: { background: "#0f172a", borderBottom: "1px solid #1e293b" },
+  chipNavInner: { maxWidth: "1280px", margin: "0 auto", padding: "10px 24px", display: "flex", flexWrap: "wrap", gap: "8px", alignItems: "center" },
   chip: (active, raining) => ({ padding: "5px 14px", borderRadius: "999px", border: `1px solid ${active ? "#38bdf8" : raining ? "#22c55e55" : "#334155"}`, background: active ? "#0c2a4a" : raining ? "#052e16" : "#1e293b", color: active ? "#38bdf8" : raining ? "#22c55e" : "#94a3b8", fontSize: "13px", fontWeight: 600, cursor: "pointer" }),
   clearBtn: { padding: "5px 14px", borderRadius: "999px", border: "1px solid #334155", background: "transparent", color: "#64748b", fontSize: "12px", cursor: "pointer" },
   retryBtn: { padding: "5px 14px", borderRadius: "999px", border: "1px solid #38bdf8", background: "#0c2a4a", color: "#38bdf8", fontSize: "12px", fontWeight: 600, cursor: "pointer" },

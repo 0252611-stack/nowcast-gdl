@@ -20,6 +20,7 @@ from app.sources.radar_iam import RadarUnavailable, fetch_current_frame
 from app.storage import (
     get_latest_reading,
     get_recent_frames,
+    list_points,
     purge_old_frames,
     purge_old_predictions,
     save_frame,
@@ -72,7 +73,7 @@ async def run_radar_loop(conn: sqlite3.Connection, state: RadarState) -> None:
 
             save_frame(conn, kmz_url, scan_time, png_bytes)
 
-            for pt in config.POINTS:
+            for pt in list_points(conn):
                 try:
                     rdg = reading_for_point(
                         pt["id"], pt["lat"], pt["lon"],
@@ -90,7 +91,7 @@ async def run_radar_loop(conn: sqlite3.Connection, state: RadarState) -> None:
             async with httpx.AsyncClient(
                 headers={"User-Agent": config.USER_AGENT}, timeout=10
             ) as fc:
-                for pt in config.POINTS:
+                for pt in list_points(conn):
                     try:
                         forecast = await fetch_forecast(
                             fc, pt["id"], pt["name"], pt["lat"], pt["lon"]
@@ -138,10 +139,11 @@ async def run_radar_loop(conn: sqlite3.Connection, state: RadarState) -> None:
         await asyncio.sleep(config.POLL_INTERVAL_SECONDS)
 
 
-async def run_forecast_loop(points: list[dict]) -> None:
-    """Precalienta el cache de Open-Meteo una vez por hora para todos los puntos."""
+async def run_forecast_loop(conn: sqlite3.Connection) -> None:
+    """Precalienta el cache de Open-Meteo una vez por hora para todos los puntos activos."""
     while True:
         try:
+            points = list_points(conn)
             async with httpx.AsyncClient(
                 headers={"User-Agent": config.USER_AGENT}, timeout=10
             ) as client:

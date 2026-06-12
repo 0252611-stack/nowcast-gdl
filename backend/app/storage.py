@@ -9,6 +9,14 @@ from pathlib import Path
 from app.schemas import NowcastResult, RadarCategory, RadarReading
 
 _DDL = """
+CREATE TABLE IF NOT EXISTS monitored_points (
+    id         TEXT PRIMARY KEY,
+    name       TEXT NOT NULL,
+    lat        REAL NOT NULL,
+    lon        REAL NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+);
+
 CREATE TABLE IF NOT EXISTS nowcast_predictions (
     id                    INTEGER PRIMARY KEY AUTOINCREMENT,
     point_id              TEXT    NOT NULL,
@@ -300,3 +308,95 @@ def purge_old_predictions(conn: sqlite3.Connection, retention_hours: int = 168) 
     )
     conn.commit()
     return cursor.rowcount
+
+
+# ---------------------------------------------------------------------------
+# Puntos monitoreados (tabla dinámica; config.POINTS es solo semilla inicial)
+# ---------------------------------------------------------------------------
+
+def seed_points(conn: sqlite3.Connection, points: list[dict]) -> None:
+    """Inserta config.POINTS en monitored_points solo si la tabla está vacía."""
+    count = conn.execute("SELECT COUNT(*) FROM monitored_points").fetchone()[0]
+    if count > 0:
+        return
+    conn.executemany(
+        "INSERT OR IGNORE INTO monitored_points (id, name, lat, lon) VALUES (?, ?, ?, ?)",
+        [(p["id"], p["name"], p["lat"], p["lon"]) for p in points],
+    )
+    conn.commit()
+
+
+def list_points(conn: sqlite3.Connection) -> list[dict]:
+    """Devuelve todos los puntos monitoreados como lista de dicts."""
+    rows = conn.execute(
+        "SELECT id, name, lat, lon FROM monitored_points ORDER BY created_at"
+    ).fetchall()
+    return [{"id": r[0], "name": r[1], "lat": r[2], "lon": r[3]} for r in rows]
+
+
+def add_point(conn: sqlite3.Connection, id: str, name: str, lat: float, lon: float) -> dict:
+    """Crea un nuevo punto monitoreado. Lanza IntegrityError si el id ya existe."""
+    conn.execute(
+        "INSERT INTO monitored_points (id, name, lat, lon) VALUES (?, ?, ?, ?)",
+        (id, name, lat, lon),
+    )
+    conn.commit()
+    return {"id": id, "name": name, "lat": lat, "lon": lon}
+
+
+def update_point(
+    conn: sqlite3.Connection, id: str, name: str | None, lat: float | None, lon: float | None
+) -> dict | None:
+    """Actualiza campos del punto. Devuelve el punto actualizado o None si no existe."""
+    row = conn.execute(
+        "SELECT id, name, lat, lon FROM monitored_points WHERE id = ?", (id,)
+    ).fetchone()
+    if row is None:
+        return None
+    new_name = name if name is not None else row[1]
+    new_lat  = lat  if lat  is not None else row[2]
+    new_lon  = lon  if lon  is not None else row[3]
+    conn.execute(
+        "UPDATE monitored_points SET name = ?, lat = ?, lon = ? WHERE id = ?",
+        (new_name, new_lat, new_lon, id),
+    )
+    conn.commit()
+    return {"id": id, "name": new_name, "lat": new_lat, "lon": new_lon}
+
+
+def delete_point(conn: sqlite3.Connection, id: str) -> bool:
+    """Elimina el punto. Devuelve True si existía, False si no."""
+    cursor = conn.execute("DELETE FROM monitored_points WHERE id = ?", (id,))
+    conn.commit()
+    return cursor.rowcount > 0
+
+
+def get_predictions(
+    conn: sqlite3.Connection, limit: int = 100, point_id: str | None = None
+) -> list[dict]:
+    """Devuelve filas individuales de nowcast_predictions (recientes primero)."""
+    if point_id:
+        rows = conn.execute(
+            """SELECT id, point_id, generated_at_utc, raining_now, predicted_rain,
+                      eta_minutes, confidence, method, outcome, lead_time_error_min,
+                      verified_at_utc, observed_raining
+               FROM nowcast_predictions
+               WHERE point_id = ?
+               ORDER BY generated_at_utc DESC LIMIT ?""",
+            (point_id, limit),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """SELECT id, point_id, generated_at_utc, raining_now, predicted_rain,
+                      eta_minutes, confidence, method, outcome, lead_time_error_min,
+                      verified_at_utc, observed_raining
+               FROM nowcast_predictions
+               ORDER BY generated_at_utc DESC LIMIT ?""",
+            (limit,),
+        ).fetchall()
+    keys = [
+        "id", "point_id", "generated_at_utc", "raining_now", "predicted_rain",
+        "eta_minutes", "confidence", "method", "outcome", "lead_time_error_min",
+        "verified_at_utc", "observed_raining",
+    ]
+    return [dict(zip(keys, row)) for row in rows]

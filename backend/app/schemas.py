@@ -101,6 +101,12 @@ class NowcastResult(BaseModel):
     horizon_minutes: int = Field(60, description="Ventana de proyección (15/30/60)")
     cell_speed_kmh: float | None = Field(None, ge=0, description="Velocidad de la celda")
     cell_bearing_deg: float | None = Field(None, ge=0, le=360, description="Rumbo de la celda")
+    # Posición del eco causante + dirección al punto (solo método advection)
+    cell_lat: float | None = Field(None, ge=-90, le=90, description="Latitud del eco causante")
+    cell_lon: float | None = Field(None, ge=-180, le=180, description="Longitud del eco causante")
+    bearing_cell_to_point_deg: float | None = Field(
+        None, ge=0, le=360, description="Rumbo del eco hacia el punto monitoreado (0-360°)"
+    )
     generated_at: datetime
     method: str = Field(
         "unknown",
