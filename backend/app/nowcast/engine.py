@@ -107,6 +107,14 @@ def estimate_arrival(
         horizon_minutes,
     )
 
+    # ETA beyond horizon: eco existe pero llega demasiado tarde para el horizonte
+    if projection["eta_minutes"] is None:
+        return _result(
+            cell_speed_kmh=round(motion["speed_kmh"], 1),
+            cell_bearing_deg=round(motion["bearing_deg"], 1),
+            method="no_approaching_cell",
+        )
+
     return _result(
         eta_minutes=projection["eta_minutes"],
         confidence=projection["confidence"],
