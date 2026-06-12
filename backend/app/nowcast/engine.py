@@ -21,7 +21,7 @@ def estimate_arrival(
     forecast: PointForecast,
     frames: list[tuple[bytes, datetime]],
     bounds: dict[str, float] | None,
-    horizon_minutes: int = 60,
+    horizon_minutes: int = 240,
 ) -> NowcastResult:
     """Estima si lloverá en el punto dentro de horizon_minutes.
 
