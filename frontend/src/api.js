@@ -8,14 +8,14 @@ const BASE_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
 
 async function fetchJson(path, options = {}) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 12000);
+  const timer = setTimeout(() => controller.abort(), 25000);
   try {
     const res = await fetch(`${BASE_URL}${path}`, { signal: controller.signal, ...options });
     if (!res.ok) throw new Error(`${path} no disponible: ${res.status}`);
     if (res.status === 204) return null;
     return await res.json();
   } catch (err) {
-    if (err.name === "AbortError") throw new Error(`${path} timeout (>5 s)`);
+    if (err.name === "AbortError") throw new Error(`${path} timeout (>25 s)`);
     throw err;
   } finally {
     clearTimeout(timer);
