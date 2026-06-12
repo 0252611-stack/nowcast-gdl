@@ -6,6 +6,7 @@
 import { useState, useEffect } from "react"
 import CellMap from "../components/CellMap.jsx"
 import { getPoints, getRadar } from "../api.js"
+import { theme } from "../theme.js"
 
 export default function MapView() {
   const [points, setPoints] = useState([])
@@ -71,16 +72,16 @@ export default function MapView() {
           {/* Leyenda */}
           <div style={st.legend}>
             <span style={st.legendItem}>
-              <span style={{ ...st.dot, background: "#38bdf8" }} /> Punto sin lluvia
+              <span style={{ ...st.dot, background: theme.primary }} /> Punto sin lluvia
             </span>
             <span style={st.legendItem}>
-              <span style={{ ...st.dot, background: "#22c55e" }} /> Lloviendo ahora
+              <span style={{ ...st.dot, background: theme.green }} /> Lloviendo ahora
             </span>
             <span style={st.legendItem}>
-              <span style={{ ...st.dot, background: "#f97316" }} /> Eco causante
+              <span style={{ ...st.dot, background: theme.orange }} /> Eco causante
             </span>
             <span style={st.legendItem}>
-              <span style={{ color: "#94a3b8", fontSize: "11px" }}>— Trayectoria</span>
+              <span style={{ color: theme.textFaint, fontSize: "11px" }}>— Trayectoria</span>
             </span>
           </div>
         </>
@@ -92,16 +93,20 @@ export default function MapView() {
 const st = {
   container: { padding: "24px", maxWidth: "1280px", margin: "0 auto", width: "100%" },
   header: { display: "flex", alignItems: "center", gap: "16px", marginBottom: "16px", flexWrap: "wrap" },
-  title: { fontSize: "18px", fontWeight: 700, color: "#e2e8f0", margin: 0 },
+  title: { fontSize: "18px", fontWeight: 700, color: theme.text, margin: 0 },
   alert: {
-    padding: "4px 12px", borderRadius: "999px",
-    background: "#431407", border: "1px solid #f9731655", color: "#f97316",
-    fontSize: "12px", fontWeight: 600,
+    padding: "4px 14px",
+    borderRadius: "999px",
+    background: theme.accentLight,
+    border: `1px solid ${theme.accent}55`,
+    color: "#92400E",
+    fontSize: "12px",
+    fontWeight: 600,
   },
-  mapWrapper: { borderRadius: "12px", overflow: "hidden" },
-  status: { color: "#64748b", textAlign: "center", padding: "40px 0" },
-  error: { color: "#ef4444", textAlign: "center", padding: "40px 0" },
+  mapWrapper: { borderRadius: "14px", overflow: "hidden", border: `1px solid ${theme.border}`, boxShadow: theme.shadow },
+  status: { color: theme.textFaint, textAlign: "center", padding: "40px 0" },
+  error: { color: theme.red, textAlign: "center", padding: "40px 0" },
   legend: { display: "flex", gap: "20px", flexWrap: "wrap", marginTop: "12px" },
-  legendItem: { display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "#94a3b8" },
+  legendItem: { display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: theme.textMuted },
   dot: { display: "inline-block", width: "10px", height: "10px", borderRadius: "50%" },
 }

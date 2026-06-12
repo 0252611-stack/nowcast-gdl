@@ -11,6 +11,7 @@ import PointCard from "./components/PointCard.jsx"
 import MapView from "./views/MapView.jsx"
 import AdminView from "./views/AdminView.jsx"
 import { getPoints, getForecast, getRadar, getMetrics } from "./api.js"
+import { theme } from "./theme.js"
 import {
   MOCK_POINTS,
   MOCK_FORECASTS,
@@ -110,13 +111,17 @@ export default function App() {
         <div style={st.headerInner}>
           <div style={st.titleGroup}>
             <h1 style={st.title}>
-              <span>🌩</span> Nowcast GDL
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true"
+                style={{ color: theme.primary }}>
+                <path d="M19 16.9A5 5 0 0 0 18 7h-1.26A8 8 0 1 0 5 16m7-3v6m-3-3 3 3 3-3"
+                  stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+              Nowcast GDL
             </h1>
             <p style={st.subtitle}>Pronóstico por puntos — Área Metropolitana de Guadalajara</p>
           </div>
           <div style={st.metaGroup}>
-            {/* Nav links */}
-            <nav style={st.navLinks}>
+            <nav style={st.navLinks} aria-label="Navegación principal">
               <NavLink to="/" end style={({ isActive }) => isActive ? st.navLinkActive : st.navLink}>
                 Inicio
               </NavLink>
@@ -127,14 +132,13 @@ export default function App() {
                 Admin
               </NavLink>
             </nav>
-            {/* Badge online/offline — solo visible en home con datos */}
             {useMock ? (
               <div style={st.badgeMock}>
-                <span style={st.dot} /> Modo offline — datos mock
+                <span style={st.dot} aria-hidden="true" /> Modo offline — datos mock
               </div>
             ) : (
               <div style={st.badgeLive}>
-                <span style={{ ...st.dot, background: "#22c55e" }} /> En línea — datos reales
+                <span style={{ ...st.dot, background: theme.green }} aria-hidden="true" /> En línea — datos reales
               </div>
             )}
             <div style={st.timestamp}>Actualizado: {fmtDatetime(generatedAt)}</div>
@@ -148,7 +152,7 @@ export default function App() {
         <Route path="/" element={
           <>
             {/* Filtro de puntos */}
-            <nav style={st.chipNav}>
+            <nav style={st.chipNav} aria-label="Filtro de puntos">
               <div style={st.chipNavInner}>
                 {displayPoints.map((p) => {
                   const nowcast = nowcasts[p.id]
@@ -158,6 +162,7 @@ export default function App() {
                       key={p.id}
                       style={st.chip(selectedPoint === p.id, isRaining)}
                       onClick={() => setSelectedPoint(selectedPoint === p.id ? null : p.id)}
+                      aria-pressed={selectedPoint === p.id}
                     >
                       {isRaining ? "🌧 " : "☀️ "}{p.name}
                     </button>
@@ -219,7 +224,7 @@ function SkillBar({ metrics }) {
 
   if (!metrics || v === 0) {
     return (
-      <p style={{ fontSize: "11px", color: "#334155", marginTop: "4px" }}>
+      <p style={{ fontSize: "11px", color: theme.textFaint, marginTop: "4px" }}>
         Skill: acumulando datos… ({metrics?.pending ?? 0} predicciones pendientes)
       </p>
     )
@@ -229,8 +234,8 @@ function SkillBar({ metrics }) {
   const fmtN = (x) => x != null ? x.toFixed(1) : "—"
 
   return (
-    <p style={{ fontSize: "11px", color: "#475569", marginTop: "4px" }}>
-      <span style={{ color: "#64748b", fontWeight: 600 }}>Skill</span>
+    <p style={{ fontSize: "11px", color: theme.textMuted, marginTop: "4px" }}>
+      <span style={{ color: theme.textFaint, fontWeight: 600 }}>Skill</span>
       {" · "}Acc {fmt(fo?.accuracy)}
       {" · "}POD {fmt(fo?.pod)}
       {" · "}FAR {fmt(fo?.far)}
@@ -242,28 +247,162 @@ function SkillBar({ metrics }) {
 }
 
 const st = {
-  root: { minHeight: "100vh", display: "flex", flexDirection: "column", background: "#0f172a" },
-  header: { background: "#0f172a", borderBottom: "1px solid #1e293b", position: "sticky", top: 0, zIndex: 10 },
-  headerInner: { maxWidth: "1280px", margin: "0 auto", padding: "16px 24px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "16px", flexWrap: "wrap" },
+  root: {
+    minHeight: "100vh",
+    display: "flex",
+    flexDirection: "column",
+    background: theme.bg,
+  },
+  header: {
+    background: theme.surface,
+    borderBottom: `1px solid ${theme.border}`,
+    boxShadow: "0 1px 4px rgba(0,0,0,0.06)",
+    position: "sticky",
+    top: 0,
+    zIndex: 10,
+  },
+  headerInner: {
+    maxWidth: "1280px",
+    margin: "0 auto",
+    padding: "14px 24px",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: "16px",
+    flexWrap: "wrap",
+  },
   titleGroup: { display: "flex", flexDirection: "column", gap: "2px" },
-  title: { fontSize: "22px", fontWeight: 800, color: "#e2e8f0", letterSpacing: "-0.02em", display: "flex", alignItems: "center", gap: "8px" },
-  subtitle: { fontSize: "13px", color: "#475569" },
+  title: {
+    fontSize: "20px",
+    fontWeight: 700,
+    color: theme.text,
+    letterSpacing: "-0.02em",
+    display: "flex",
+    alignItems: "center",
+    gap: "8px",
+  },
+  subtitle: { fontSize: "13px", color: theme.textFaint },
   metaGroup: { display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "6px" },
   navLinks: { display: "flex", gap: "4px" },
-  navLink: { padding: "4px 12px", borderRadius: "6px", fontSize: "13px", fontWeight: 600, color: "#64748b", textDecoration: "none", border: "1px solid transparent" },
-  navLinkActive: { padding: "4px 12px", borderRadius: "6px", fontSize: "13px", fontWeight: 600, color: "#38bdf8", textDecoration: "none", border: "1px solid #38bdf855", background: "#0c2a4a" },
-  badgeMock: { display: "inline-flex", alignItems: "center", gap: "6px", padding: "4px 12px", borderRadius: "999px", background: "#422006", border: "1px solid #f9731655", color: "#f97316", fontSize: "12px", fontWeight: 600 },
-  badgeLive: { display: "inline-flex", alignItems: "center", gap: "6px", padding: "4px 12px", borderRadius: "999px", background: "#052e16", border: "1px solid #22c55e55", color: "#22c55e", fontSize: "12px", fontWeight: 600 },
-  dot: { display: "inline-block", width: "6px", height: "6px", borderRadius: "50%", background: "#f97316", animation: "pulse 2s infinite" },
-  timestamp: { fontSize: "11px", color: "#475569" },
-  chipNav: { background: "#0f172a", borderBottom: "1px solid #1e293b" },
-  chipNavInner: { maxWidth: "1280px", margin: "0 auto", padding: "10px 24px", display: "flex", flexWrap: "wrap", gap: "8px", alignItems: "center" },
-  chip: (active, raining) => ({ padding: "5px 14px", borderRadius: "999px", border: `1px solid ${active ? "#38bdf8" : raining ? "#22c55e55" : "#334155"}`, background: active ? "#0c2a4a" : raining ? "#052e16" : "#1e293b", color: active ? "#38bdf8" : raining ? "#22c55e" : "#94a3b8", fontSize: "13px", fontWeight: 600, cursor: "pointer" }),
-  clearBtn: { padding: "5px 14px", borderRadius: "999px", border: "1px solid #334155", background: "transparent", color: "#64748b", fontSize: "12px", cursor: "pointer" },
-  retryBtn: { padding: "5px 14px", borderRadius: "999px", border: "1px solid #38bdf8", background: "#0c2a4a", color: "#38bdf8", fontSize: "12px", fontWeight: 600, cursor: "pointer" },
-  main: { flex: 1, maxWidth: "1280px", width: "100%", margin: "0 auto", padding: "24px" },
-  grid: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(340px, 1fr))", gap: "20px" },
-  spinner: { textAlign: "center", color: "#475569", padding: "80px 0", fontSize: "15px" },
-  footer: { borderTop: "1px solid #1e293b", padding: "16px 24px", textAlign: "center" },
-  footerText: { fontSize: "12px", color: "#334155" },
+  navLink: {
+    padding: "5px 14px",
+    borderRadius: "8px",
+    fontSize: "13px",
+    fontWeight: 600,
+    color: theme.textMuted,
+    textDecoration: "none",
+    border: "1px solid transparent",
+    transition: "color 0.15s, background 0.15s",
+  },
+  navLinkActive: {
+    padding: "5px 14px",
+    borderRadius: "8px",
+    fontSize: "13px",
+    fontWeight: 600,
+    color: theme.primary,
+    textDecoration: "none",
+    border: `1px solid ${theme.border}`,
+    background: theme.primaryLight,
+  },
+  badgeMock: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "6px",
+    padding: "4px 12px",
+    borderRadius: "999px",
+    background: "#FEF3C7",
+    border: "1px solid #FDE68A",
+    color: "#92400E",
+    fontSize: "12px",
+    fontWeight: 600,
+  },
+  badgeLive: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "6px",
+    padding: "4px 12px",
+    borderRadius: "999px",
+    background: theme.greenLight,
+    border: `1px solid ${theme.green}44`,
+    color: "#166534",
+    fontSize: "12px",
+    fontWeight: 600,
+  },
+  dot: {
+    display: "inline-block",
+    width: "6px",
+    height: "6px",
+    borderRadius: "50%",
+    background: theme.accent,
+    animation: "pulse 2s infinite",
+  },
+  timestamp: { fontSize: "11px", color: theme.textFaint },
+  chipNav: {
+    background: theme.surface,
+    borderBottom: `1px solid ${theme.border}`,
+  },
+  chipNavInner: {
+    maxWidth: "1280px",
+    margin: "0 auto",
+    padding: "10px 24px",
+    display: "flex",
+    flexWrap: "wrap",
+    gap: "8px",
+    alignItems: "center",
+  },
+  chip: (active, raining) => ({
+    padding: "5px 14px",
+    borderRadius: "999px",
+    border: `1px solid ${active ? theme.primary : raining ? theme.green + "55" : theme.borderMid}`,
+    background: active ? theme.primaryLight : raining ? theme.greenLight : theme.surfaceMuted,
+    color: active ? theme.primary : raining ? "#166534" : theme.textMuted,
+    fontSize: "13px",
+    fontWeight: 600,
+    cursor: "pointer",
+    transition: "background 0.15s, border-color 0.15s",
+  }),
+  clearBtn: {
+    padding: "5px 14px",
+    borderRadius: "999px",
+    border: `1px solid ${theme.borderMid}`,
+    background: "transparent",
+    color: theme.textFaint,
+    fontSize: "12px",
+    cursor: "pointer",
+  },
+  retryBtn: {
+    padding: "5px 14px",
+    borderRadius: "999px",
+    border: `1px solid ${theme.primary}`,
+    background: theme.primaryLight,
+    color: theme.primary,
+    fontSize: "12px",
+    fontWeight: 600,
+    cursor: "pointer",
+  },
+  main: {
+    flex: 1,
+    maxWidth: "1280px",
+    width: "100%",
+    margin: "0 auto",
+    padding: "24px",
+  },
+  grid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fill, minmax(340px, 1fr))",
+    gap: "20px",
+  },
+  spinner: {
+    textAlign: "center",
+    color: theme.textFaint,
+    padding: "80px 0",
+    fontSize: "15px",
+  },
+  footer: {
+    borderTop: `1px solid ${theme.border}`,
+    padding: "16px 24px",
+    textAlign: "center",
+    background: theme.surface,
+  },
+  footerText: { fontSize: "12px", color: theme.textFaint },
 }

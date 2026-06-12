@@ -5,26 +5,50 @@
 }
 
 :root {
-  --color-bg: #0f172a;
-  --color-surface: #1e293b;
-  --color-surface-2: #273549;
-  --color-border: #334155;
-  --color-text: #e2e8f0;
-  --color-text-muted: #94a3b8;
-  --color-accent: #38bdf8;
-  --color-green: #22c55e;
-  --color-yellow: #eab308;
-  --color-orange: #f97316;
-  --color-red: #ef4444;
-  --color-gray: #64748b;
+  color-scheme: light;
+
+  /* Fondos */
+  --color-bg:           #F8FAFC;
+  --color-surface:      #FFFFFF;
+  --color-surface-muted:#E9EEF6;
+
+  /* Bordes */
+  --color-border:       #DBEAFE;
+  --color-border-mid:   #CBD5E1;
+
+  /* Texto */
+  --color-text:         #1E293B;
+  --color-text-muted:   #475569;
+  --color-text-faint:   #64748B;
+
+  /* Primario y acento */
+  --color-primary:      #1E40AF;
+  --color-primary-light:#DBEAFE;
+  --color-accent:       #D97706;
+  --color-accent-light: #FEF3C7;
+
+  /* Semánticos de lluvia */
+  --color-green:        #16A34A;
+  --color-green-light:  #DCFCE7;
+  --color-yellow:       #CA8A04;
+  --color-yellow-light: #FEF9C3;
+  --color-orange:       #EA580C;
+  --color-orange-light: #FFEDD5;
+  --color-red:          #DC2626;
+  --color-red-light:    #FEE2E2;
+
+  /* Tipografía */
+  --font-base: 'Fira Sans', system-ui, -apple-system, sans-serif;
+  --font-mono: 'Fira Code', 'Fira Mono', monospace;
+
   --radius: 12px;
-  --shadow: 0 4px 24px rgba(0,0,0,0.4);
+  --shadow: 0 1px 4px rgba(0,0,0,0.08), 0 4px 16px rgba(0,0,0,0.06);
 }
 
 html, body {
   background-color: var(--color-bg);
   color: var(--color-text);
-  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  font-family: var(--font-base);
   font-size: 15px;
   line-height: 1.5;
   min-height: 100vh;
@@ -35,7 +59,7 @@ html, body {
 }
 
 a {
-  color: var(--color-accent);
+  color: var(--color-primary);
   text-decoration: none;
 }
 
@@ -43,12 +67,18 @@ button {
   cursor: pointer;
 }
 
+/* Números tabulares en campos de datos */
+.tabular {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
 @keyframes pulse {
   0%, 100% { opacity: 1; }
-  50% { opacity: 0.4; }
+  50%       { opacity: 0.4; }
 }
 
 @keyframes skeleton-shimmer {
-  0% { background-position: -200% 0; }
-  100% { background-position: 200% 0; }
+  0%   { background-position: -200% 0; }
+  100% { background-position:  200% 0; }
 }

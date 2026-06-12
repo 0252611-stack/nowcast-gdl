@@ -13,6 +13,7 @@ import { useEffect } from "react"
 import { MapContainer, TileLayer, Marker, Polyline, CircleMarker, Tooltip, useMap } from "react-leaflet"
 import L from "leaflet"
 import "leaflet/dist/leaflet.css"
+import { theme } from "../theme.js"
 
 // Corrige el icono por defecto de Leaflet (problema conocido con bundlers)
 delete L.Icon.Default.prototype._getIconUrl
@@ -38,7 +39,7 @@ function rainviewerTemplate(url) {
 function arrowIcon(bearing) {
   const svg = `<svg width="28" height="28" viewBox="0 0 28 28" xmlns="http://www.w3.org/2000/svg">
     <g transform="rotate(${bearing}, 14, 14)">
-      <polygon points="14,3 24,24 14,19 4,24" fill="#f97316" stroke="#1e293b" stroke-width="1.5"/>
+      <polygon points="14,3 24,24 14,19 4,24" fill="${theme.orange}" stroke="#FFFFFF" stroke-width="1.5"/>
     </g>
   </svg>`
   return L.divIcon({
@@ -51,9 +52,9 @@ function arrowIcon(bearing) {
 
 /** Icono de marcador de punto monitoreado */
 function pointIcon(raining) {
-  const color = raining ? "#22c55e" : "#38bdf8"
+  const color = raining ? theme.green : theme.primary
   const svg = `<svg width="20" height="20" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
-    <circle cx="10" cy="10" r="7" fill="${color}" stroke="#0f172a" stroke-width="2"/>
+    <circle cx="10" cy="10" r="7" fill="${color}" stroke="#FFFFFF" stroke-width="2"/>
   </svg>`
   return L.divIcon({
     className: "",
@@ -100,7 +101,7 @@ export default function CellMap({
     height,
     width: "100%",
     borderRadius: compact ? "8px" : "12px",
-    border: "1px solid #273549",
+    border: `1px solid ${theme.border}`,
     zIndex: 0,
   }
 
@@ -166,7 +167,7 @@ export default function CellMap({
             <CircleMarker
               center={echoPos}
               radius={8}
-              pathOptions={{ color: "#f97316", fillColor: "#f97316", fillOpacity: 0.5, weight: 2 }}
+              pathOptions={{ color: theme.orange, fillColor: theme.orange, fillOpacity: 0.5, weight: 2 }}
             >
               {!compact && (
                 <Tooltip>
@@ -181,7 +182,7 @@ export default function CellMap({
             {/* Línea del eco al punto */}
             <Polyline
               positions={[echoPos, ptPos]}
-              pathOptions={{ color: "#f97316", weight: 2, dashArray: "6 4", opacity: 0.8 }}
+              pathOptions={{ color: theme.orange, weight: 2, dashArray: "6 4", opacity: 0.8 }}
             />
           </g>
         )

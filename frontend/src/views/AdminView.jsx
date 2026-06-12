@@ -7,12 +7,13 @@
 
 import { useState, useEffect, useCallback } from "react"
 import { getPoints, getPredictions, createPoint, updatePoint, deletePoint } from "../api.js"
+import { theme } from "../theme.js"
 
 const OUTCOME_LABELS = {
-  hit: { label: "Acierto", color: "#22c55e" },
-  miss: { label: "Fallo", color: "#f97316" },
-  false_alarm: { label: "Falsa alarma", color: "#eab308" },
-  correct_negative: { label: "Negativo correcto", color: "#64748b" },
+  hit:              { label: "Acierto",           color: theme.green },
+  miss:             { label: "Fallo",              color: theme.orange },
+  false_alarm:      { label: "Falsa alarma",       color: theme.yellow },
+  correct_negative: { label: "Negativo correcto",  color: theme.textMuted },
 }
 
 function fmtUtc(str) {
@@ -32,6 +33,7 @@ function PredictionsTable() {
   const [filterPoint, setFilterPoint] = useState("")
 
   useEffect(() => {
+    setLoading(true)
     getPredictions({ limit: 100, pointId: filterPoint || undefined })
       .then(setRows)
       .catch(() => setRows([]))
@@ -46,7 +48,7 @@ function PredictionsTable() {
           style={st.input}
           placeholder="Filtrar por punto (id)…"
           value={filterPoint}
-          onChange={e => { setFilterPoint(e.target.value); setLoading(true) }}
+          onChange={e => setFilterPoint(e.target.value)}
         />
       </div>
       {loading ? (
@@ -72,13 +74,13 @@ function PredictionsTable() {
                     <td style={st.td}>{fmtUtc(r.generated_at_utc)}</td>
                     <td style={st.td}><code style={st.code}>{r.method}</code></td>
                     <td style={st.td}>{r.predicted_rain ? "Sí" : "No"}</td>
-                    <td style={st.td}>{r.eta_minutes ?? "—"}</td>
+                    <td style={{ ...st.td, fontFamily: theme.fontMono }}>{r.eta_minutes ?? "—"}</td>
                     <td style={st.td}>
                       {oc ? (
                         <span style={{ color: oc.color, fontWeight: 600 }}>{oc.label}</span>
                       ) : r.verified_at_utc ? "—" : <span style={st.muted}>Pendiente</span>}
                     </td>
-                    <td style={st.td}>{r.lead_time_error_min ?? "—"}</td>
+                    <td style={{ ...st.td, fontFamily: theme.fontMono }}>{r.lead_time_error_min ?? "—"}</td>
                   </tr>
                 )
               })}
@@ -166,7 +168,7 @@ function PointsManager({ token }) {
       </div>
 
       {msg && (
-        <div style={{ ...st.alert, color: msg.ok ? "#22c55e" : "#ef4444", borderColor: msg.ok ? "#22c55e44" : "#ef444444" }}>
+        <div style={{ ...st.alert, color: msg.ok ? theme.green : theme.red, borderColor: msg.ok ? theme.green + "44" : theme.red + "44", background: msg.ok ? theme.greenLight : theme.redLight }}>
           {msg.text}
         </div>
       )}
@@ -237,12 +239,12 @@ function PointsManager({ token }) {
               <tr key={pt.id} style={st.tr}>
                 <td style={st.td}><code style={st.code}>{pt.id}</code></td>
                 <td style={st.td}>{pt.name}</td>
-                <td style={st.td}>{pt.lat.toFixed(5)}</td>
-                <td style={st.td}>{pt.lon.toFixed(5)}</td>
+                <td style={{ ...st.td, fontFamily: theme.fontMono }}>{pt.lat.toFixed(5)}</td>
+                <td style={{ ...st.td, fontFamily: theme.fontMono }}>{pt.lon.toFixed(5)}</td>
                 <td style={st.td}>
                   <div style={{ display: "flex", gap: "6px" }}>
                     <button style={st.btnSmall} onClick={() => startEdit(pt)}>Editar</button>
-                    <button style={{ ...st.btnSmall, color: "#ef4444", borderColor: "#ef444455" }} onClick={() => handleDelete(pt.id)}>
+                    <button style={{ ...st.btnSmall, color: theme.red, borderColor: theme.red + "55" }} onClick={() => handleDelete(pt.id)}>
                       Eliminar
                     </button>
                   </div>
@@ -276,13 +278,14 @@ export default function AdminView() {
       {/* Token */}
       <div style={st.tokenBox}>
         <label style={st.label}>Token admin</label>
-        <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+        <div style={{ display: "flex", gap: "8px", alignItems: "center", marginTop: "6px" }}>
           <input
             style={{ ...st.input, maxWidth: "320px" }}
             type={showToken ? "text" : "password"}
             value={token}
             onChange={e => handleTokenChange(e.target.value)}
             placeholder="Pegar token aquí…"
+            autoComplete="off"
           />
           <button style={st.btnSecondary} onClick={() => setShowToken(s => !s)}>
             {showToken ? "Ocultar" : "Mostrar"}
@@ -301,35 +304,93 @@ export default function AdminView() {
 
 const st = {
   container: { padding: "24px", maxWidth: "1100px", margin: "0 auto", width: "100%" },
-  pageTitle: { fontSize: "18px", fontWeight: 700, color: "#e2e8f0", marginBottom: "24px" },
+  pageTitle: { fontSize: "18px", fontWeight: 700, color: theme.text, marginBottom: "24px" },
   section: { marginBottom: "32px" },
-  sectionTitle: { fontSize: "15px", fontWeight: 700, color: "#e2e8f0", margin: "0 0 12px" },
-  tokenBox: { background: "#1e293b", borderRadius: "10px", padding: "16px", marginBottom: "24px", border: "1px solid #273549" },
-  form: { background: "#0f172a", border: "1px solid #273549", borderRadius: "8px", padding: "16px", marginBottom: "16px" },
+  sectionTitle: { fontSize: "15px", fontWeight: 700, color: theme.text, margin: "0 0 12px" },
+  tokenBox: {
+    background: theme.surface,
+    borderRadius: "12px",
+    padding: "16px",
+    marginBottom: "24px",
+    border: `1px solid ${theme.border}`,
+    boxShadow: theme.shadow,
+  },
+  form: {
+    background: theme.surfaceMuted,
+    border: `1px solid ${theme.border}`,
+    borderRadius: "10px",
+    padding: "16px",
+    marginBottom: "16px",
+  },
   formRow: { display: "flex", alignItems: "center", gap: "12px", marginBottom: "10px" },
-  label: { fontSize: "12px", color: "#64748b", minWidth: "52px", fontWeight: 600 },
+  label: { fontSize: "12px", color: theme.textFaint, minWidth: "52px", fontWeight: 600 },
   input: {
-    background: "#0f172a", border: "1px solid #334155", borderRadius: "6px",
-    color: "#e2e8f0", padding: "6px 10px", fontSize: "13px",
-    outline: "none", width: "100%",
+    background: theme.surface,
+    border: `1px solid ${theme.borderMid}`,
+    borderRadius: "8px",
+    color: theme.text,
+    padding: "7px 10px",
+    fontSize: "13px",
+    outline: "none",
+    width: "100%",
+    fontFamily: "inherit",
   },
   table: { width: "100%", borderCollapse: "collapse", fontSize: "13px" },
-  th: { padding: "8px 12px", textAlign: "left", color: "#64748b", fontWeight: 600, fontSize: "11px", textTransform: "uppercase", borderBottom: "1px solid #273549" },
-  tr: { borderBottom: "1px solid #1e293b" },
-  td: { padding: "10px 12px", color: "#cbd5e1", verticalAlign: "middle" },
-  code: { background: "#0f172a", borderRadius: "4px", padding: "1px 6px", color: "#38bdf8", fontSize: "12px" },
-  muted: { color: "#475569", fontSize: "12px", margin: 0 },
-  alert: { padding: "8px 12px", borderRadius: "6px", border: "1px solid", marginBottom: "12px", fontSize: "13px" },
+  th: {
+    padding: "8px 12px",
+    textAlign: "left",
+    color: theme.textFaint,
+    fontWeight: 600,
+    fontSize: "11px",
+    textTransform: "uppercase",
+    letterSpacing: "0.04em",
+    borderBottom: `1px solid ${theme.border}`,
+    background: theme.surfaceMuted,
+  },
+  tr: { borderBottom: `1px solid ${theme.border}` },
+  td: { padding: "10px 12px", color: theme.text, verticalAlign: "middle" },
+  code: {
+    background: theme.primaryLight,
+    borderRadius: "4px",
+    padding: "1px 6px",
+    color: theme.primary,
+    fontSize: "12px",
+    fontFamily: theme.fontMono,
+  },
+  muted: { color: theme.textFaint, fontSize: "12px", margin: 0 },
+  alert: {
+    padding: "8px 12px",
+    borderRadius: "8px",
+    border: "1px solid",
+    marginBottom: "12px",
+    fontSize: "13px",
+  },
   btnPrimary: {
-    padding: "6px 14px", borderRadius: "6px", border: "1px solid #38bdf855",
-    background: "#0c2a4a", color: "#38bdf8", fontSize: "12px", fontWeight: 600, cursor: "pointer",
+    padding: "7px 16px",
+    borderRadius: "8px",
+    border: `1px solid ${theme.primary}55`,
+    background: theme.primaryLight,
+    color: theme.primary,
+    fontSize: "13px",
+    fontWeight: 600,
+    cursor: "pointer",
   },
   btnSecondary: {
-    padding: "6px 14px", borderRadius: "6px", border: "1px solid #334155",
-    background: "transparent", color: "#94a3b8", fontSize: "12px", cursor: "pointer",
+    padding: "7px 16px",
+    borderRadius: "8px",
+    border: `1px solid ${theme.borderMid}`,
+    background: "transparent",
+    color: theme.textMuted,
+    fontSize: "13px",
+    cursor: "pointer",
   },
   btnSmall: {
-    padding: "4px 10px", borderRadius: "6px", border: "1px solid #334155",
-    background: "transparent", color: "#94a3b8", fontSize: "11px", cursor: "pointer",
+    padding: "4px 10px",
+    borderRadius: "6px",
+    border: `1px solid ${theme.borderMid}`,
+    background: "transparent",
+    color: theme.textMuted,
+    fontSize: "11px",
+    cursor: "pointer",
   },
 }

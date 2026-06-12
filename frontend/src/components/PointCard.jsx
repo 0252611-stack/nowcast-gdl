@@ -6,20 +6,22 @@ import RadarStatus from "./RadarStatus.jsx"
 import WindCompass from "./WindCompass.jsx"
 import HourlyChart from "./HourlyChart.jsx"
 import CellMap from "./CellMap.jsx"
+import SourceTag from "./SourceTag.jsx"
+import { theme } from "../theme.js"
 
 const s = {
   card: {
-    background: "#1e293b",
-    borderRadius: "14px",
-    border: "1px solid #273549",
-    boxShadow: "0 4px 24px rgba(0,0,0,0.35)",
+    background: theme.surface,
+    borderRadius: "16px",
+    border: `1px solid ${theme.border}`,
+    boxShadow: theme.shadow,
     overflow: "hidden",
     display: "flex",
     flexDirection: "column",
   },
   header: {
     padding: "16px 18px 12px",
-    borderBottom: "1px solid #273549",
+    borderBottom: `1px solid ${theme.border}`,
     display: "flex",
     alignItems: "flex-start",
     justifyContent: "space-between",
@@ -28,17 +30,19 @@ const s = {
   headerLeft: {
     display: "flex",
     flexDirection: "column",
-    gap: "4px",
+    gap: "3px",
   },
   pointName: {
     fontSize: "17px",
     fontWeight: 700,
-    color: "#e2e8f0",
+    color: theme.text,
     letterSpacing: "-0.01em",
   },
   coords: {
     fontSize: "11px",
-    color: "#475569",
+    color: theme.textFaint,
+    fontFamily: theme.fontMono,
+    fontVariantNumeric: "tabular-nums",
   },
   body: {
     padding: "14px 18px",
@@ -49,18 +53,18 @@ const s = {
   },
   row: {
     display: "flex",
-    alignItems: "center",
+    alignItems: "flex-start",
     justifyContent: "space-between",
     gap: "8px",
   },
   section: {
     display: "flex",
     flexDirection: "column",
-    gap: "6px",
+    gap: "4px",
   },
   label: {
     fontSize: "11px",
-    color: "#64748b",
+    color: theme.textFaint,
     textTransform: "uppercase",
     letterSpacing: "0.06em",
     fontWeight: 600,
@@ -69,51 +73,55 @@ const s = {
     display: "inline-flex",
     alignItems: "center",
     gap: "5px",
-    padding: "4px 10px",
+    padding: "5px 12px",
     borderRadius: "999px",
-    background: raining ? "#052e16" : "#1e293b",
-    border: `1px solid ${raining ? "#22c55e66" : "#334155"}`,
-    color: raining ? "#22c55e" : "#64748b",
-    fontSize: "12px",
+    background: raining ? theme.greenLight : theme.surfaceMuted,
+    border: `1px solid ${raining ? theme.green + "55" : theme.borderMid}`,
+    color: raining ? "#166534" : theme.textMuted,
+    fontSize: "13px",
     fontWeight: 600,
   }),
   etaBadge: {
     display: "inline-flex",
     alignItems: "center",
     gap: "5px",
-    padding: "4px 10px",
+    padding: "5px 12px",
     borderRadius: "999px",
-    background: "#431407",
-    border: "1px solid #f9731655",
-    color: "#f97316",
-    fontSize: "12px",
+    background: theme.accentLight,
+    border: `1px solid ${theme.accent}55`,
+    color: "#92400E",
+    fontSize: "13px",
     fontWeight: 600,
   },
   tempRow: {
     display: "flex",
-    gap: "16px",
-    alignItems: "center",
+    gap: "12px",
+    alignItems: "baseline",
   },
   tempValue: {
     fontSize: "28px",
     fontWeight: 700,
-    color: "#e2e8f0",
+    color: theme.text,
     lineHeight: 1,
+    fontFamily: theme.fontMono,
+    fontVariantNumeric: "tabular-nums",
   },
   tempUnit: {
     fontSize: "14px",
-    color: "#94a3b8",
+    color: theme.textMuted,
   },
   probBadge: {
     display: "inline-flex",
     alignItems: "center",
-    padding: "3px 10px",
+    padding: "4px 12px",
     borderRadius: "999px",
-    background: "#0c2a4a",
-    border: "1px solid #38bdf855",
-    color: "#38bdf8",
+    background: theme.primaryLight,
+    border: `1px solid ${theme.primary}33`,
+    color: theme.primary,
     fontSize: "13px",
     fontWeight: 600,
+    fontFamily: theme.fontMono,
+    fontVariantNumeric: "tabular-nums",
   },
   windRow: {
     display: "flex",
@@ -122,7 +130,7 @@ const s = {
   },
   divider: {
     height: "1px",
-    background: "#273549",
+    background: theme.border,
     margin: "2px 0",
   },
   chartSection: {
@@ -130,30 +138,30 @@ const s = {
   },
   chartLabel: {
     fontSize: "11px",
-    color: "#64748b",
+    color: theme.textFaint,
     textTransform: "uppercase",
     letterSpacing: "0.06em",
     fontWeight: 600,
     marginBottom: "8px",
   },
-  confidenceBar: () => ({
+  confidenceBar: {
     display: "flex",
     alignItems: "center",
     gap: "8px",
     fontSize: "11px",
-    color: "#64748b",
-  }),
+    color: theme.textFaint,
+  },
   confidenceTrack: {
     flex: 1,
     height: "4px",
-    background: "#273549",
+    background: theme.surfaceMuted,
     borderRadius: "999px",
     overflow: "hidden",
   },
   confidenceFill: (confidence) => ({
     height: "100%",
     width: `${Math.round((confidence ?? 0) * 100)}%`,
-    background: confidence > 0.8 ? "#22c55e" : confidence > 0.5 ? "#f97316" : "#64748b",
+    background: confidence > 0.8 ? theme.green : confidence > 0.5 ? theme.accent : theme.borderMid,
     borderRadius: "999px",
     transition: "width 0.4s",
   }),
@@ -165,19 +173,20 @@ export default function PointCard({ point, forecast, radar, nowcast, rainviewerU
       <div style={{ ...s.card, padding: "18px" }}>
         <div style={{
           height: "16px", width: "60%", borderRadius: "6px", marginBottom: "12px",
-          background: "linear-gradient(90deg,#1e293b 25%,#273549 50%,#1e293b 75%)",
+          background: `linear-gradient(90deg,${theme.surfaceMuted} 25%,${theme.border} 50%,${theme.surfaceMuted} 75%)`,
           backgroundSize: "200% 100%",
           animation: "skeleton-shimmer 1.4s infinite",
         }} />
         <div style={{
           height: "120px", borderRadius: "8px",
-          background: "linear-gradient(90deg,#1e293b 25%,#273549 50%,#1e293b 75%)",
+          background: `linear-gradient(90deg,${theme.surfaceMuted} 25%,${theme.border} 50%,${theme.surfaceMuted} 75%)`,
           backgroundSize: "200% 100%",
           animation: "skeleton-shimmer 1.4s infinite",
         }} />
       </div>
     )
   }
+
   // Entrada horaria más cercana a ahora (última cuyo time <= now)
   const nearest = (() => {
     const hourly = forecast?.hourly
@@ -189,6 +198,7 @@ export default function PointCard({ point, forecast, radar, nowcast, rainviewerU
     }
     return best
   })()
+
   const radarAvailable = radar !== null && radar !== undefined
 
   return (
@@ -197,7 +207,9 @@ export default function PointCard({ point, forecast, radar, nowcast, rainviewerU
       <div style={s.header}>
         <div style={s.headerLeft}>
           <span style={s.pointName}>{point.name}</span>
-          <span style={s.coords}>{point.lat.toFixed(4)}° N, {Math.abs(point.lon).toFixed(4)}° O</span>
+          <span style={s.coords}>
+            {point.lat.toFixed(4)}° N, {Math.abs(point.lon).toFixed(4)}° O
+          </span>
         </div>
         <RadarStatus reading={radar} available={radarAvailable} rainviewerUrl={rainviewerUrl} />
       </div>
@@ -215,14 +227,19 @@ export default function PointCard({ point, forecast, radar, nowcast, rainviewerU
                 : <span>☀️ Sin lluvia</span>
               }
             </span>
+            <SourceTag source="iam" />
           </div>
 
           {nowcast && !nowcast.raining_now && nowcast.eta_minutes !== null && (
             <div style={s.section}>
               <span style={s.label}>Lluvia en</span>
               <span style={s.etaBadge}>
-                ⏱ {nowcast.eta_minutes} min
+                ⏱{" "}
+                <span style={{ fontFamily: theme.fontMono, fontVariantNumeric: "tabular-nums" }}>
+                  {nowcast.eta_minutes} min
+                </span>
               </span>
+              <SourceTag source="nowcast" />
             </div>
           )}
         </div>
@@ -238,17 +255,23 @@ export default function PointCard({ point, forecast, radar, nowcast, rainviewerU
               compact
               height="160px"
             />
+            <SourceTag source="iam" />
           </div>
         )}
 
         {/* Confianza del nowcast */}
         {nowcast?.confidence !== null && nowcast?.confidence !== undefined && (
-          <div style={s.confidenceBar()}>
-            <span>Confianza</span>
-            <div style={s.confidenceTrack}>
-              <div style={s.confidenceFill(nowcast.confidence)} />
+          <div style={s.section}>
+            <div style={s.confidenceBar}>
+              <span>Confianza</span>
+              <div style={s.confidenceTrack}>
+                <div style={s.confidenceFill(nowcast.confidence)} />
+              </div>
+              <span style={{ fontFamily: theme.fontMono }}>
+                {Math.round(nowcast.confidence * 100)}%
+              </span>
             </div>
-            <span>{Math.round(nowcast.confidence * 100)}%</span>
+            <SourceTag source="nowcast" />
           </div>
         )}
 
@@ -265,12 +288,17 @@ export default function PointCard({ point, forecast, radar, nowcast, rainviewerU
                   <span style={s.tempUnit}> °C</span>
                 </span>
               </div>
+              <SourceTag source="openmeteo" />
             </div>
             <div style={s.section}>
               <span style={s.label}>Prob. lluvia</span>
               <span style={s.probBadge}>
-                💧 {nearest.precipitation_probability}%
+                💧{" "}
+                <span style={{ fontFamily: theme.fontMono }}>
+                  {nearest.precipitation_probability}%
+                </span>
               </span>
+              <SourceTag source="openmeteo" />
             </div>
           </div>
         )}
@@ -291,6 +319,7 @@ export default function PointCard({ point, forecast, radar, nowcast, rainviewerU
                 label="700 hPa"
               />
             </div>
+            <SourceTag source="openmeteo" />
           </div>
         )}
       </div>
