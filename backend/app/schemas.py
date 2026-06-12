@@ -107,6 +107,13 @@ class NowcastResult(BaseModel):
     bearing_cell_to_point_deg: float | None = Field(
         None, ge=0, le=360, description="Rumbo del eco hacia el punto monitoreado (0-360°)"
     )
+    # Viento 700 hPa medido EN el eco (hacia donde va, no de donde viene)
+    wind_echo_bearing_deg: float | None = Field(
+        None, ge=0, le=360, description="Rumbo hacia donde va el viento 700 hPa en el eco"
+    )
+    wind_echo_speed_kmh: float | None = Field(
+        None, ge=0, description="Velocidad del viento 700 hPa en el eco (km/h)"
+    )
     generated_at: datetime
     method: str = Field(
         "unknown",

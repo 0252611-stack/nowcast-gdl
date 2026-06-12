@@ -31,6 +31,9 @@ _MAX_HOURS = 12
 # hour_bucket is an ISO string truncated to the hour, e.g. "2026-06-10T14"
 _cache: dict[tuple[str, str], PointForecast] = {}
 
+# Cache para viento en coordenadas arbitrarias: key = (lat_1dec, lon_1dec, hour_bucket)
+_wind_cache: dict[tuple, dict] = {}
+
 
 def _hour_bucket() -> str:
     """Return current UTC time truncated to the hour as a string key."""
@@ -148,3 +151,35 @@ async def fetch_all_points(
         return result
 
     return list(await asyncio.gather(*(_fetch_or_cache(p) for p in points)))
+
+
+async def fetch_wind_700_at(
+    client: httpx.AsyncClient,
+    lat: float,
+    lon: float,
+) -> dict:
+    """Viento 700 hPa (~3 000 m) en coordenadas arbitrarias.
+
+    Caché por (lat redondeada 0.1°, lon redondeada 0.1°, hora UTC).
+    Devuelve {"toward_deg": float, "speed_kmh": float} donde toward_deg
+    es la dirección HACIA la que sopla (convención "hacia", 0=N, 90=E),
+    es decir (wind_direction_700hPa + 180) % 360.
+    """
+    key = (round(lat, 1), round(lon, 1), _hour_bucket())
+    if key in _wind_cache:
+        return _wind_cache[key]
+
+    params = {
+        "latitude": lat,
+        "longitude": lon,
+        "hourly": "wind_speed_700hPa,wind_direction_700hPa",
+        "timezone": "America/Mexico_City",
+        "forecast_hours": 1,
+    }
+    data = await _get_with_retry(client, _BASE_URL, params)
+    speed = float(data["hourly"]["wind_speed_700hPa"][0])
+    direction = float(data["hourly"]["wind_direction_700hPa"][0])
+    result = {"toward_deg": (direction + 180) % 360, "speed_kmh": speed}
+    _wind_cache[key] = result
+    logger.debug("Wind 700 hPa at (%.1f, %.1f): %.0f° %.1f km/h", lat, lon, result["toward_deg"], speed)
+    return result

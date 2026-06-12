@@ -81,6 +81,18 @@ export default function MapView() {
               <span style={{ ...st.dot, background: theme.orange }} /> Eco causante
             </span>
             <span style={st.legendItem}>
+              <svg width="14" height="14" viewBox="0 0 14 14" style={{ flexShrink: 0 }}>
+                <polygon points="7,1 12,12 7,9 2,12" fill={theme.orange} stroke="#fff" strokeWidth="0.8"/>
+              </svg>
+              Dirección del eco (radar)
+            </span>
+            <span style={st.legendItem}>
+              <svg width="14" height="14" viewBox="0 0 14 14" style={{ flexShrink: 0 }}>
+                <polygon points="7,1 12,12 7,9 2,12" fill="none" stroke={theme.primary} strokeWidth="1.5"/>
+              </svg>
+              Viento 700 hPa en el eco
+            </span>
+            <span style={st.legendItem}>
               <span style={{ color: theme.textFaint, fontSize: "11px" }}>— Trayectoria</span>
             </span>
           </div>

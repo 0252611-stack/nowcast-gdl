@@ -15,7 +15,7 @@ from PIL import Image
 from app import config
 from app.nowcast.engine import estimate_arrival
 from app.processing.pixel_extract import reading_for_point
-from app.sources.openmeteo import fetch_all_points, fetch_forecast
+from app.sources.openmeteo import fetch_all_points, fetch_forecast, fetch_wind_700_at
 from app.sources.radar_iam import RadarUnavailable, fetch_current_frame
 from app.storage import (
     get_latest_reading,
@@ -100,6 +100,13 @@ async def run_radar_loop(conn: sqlite3.Connection, state: RadarState) -> None:
                         result = estimate_arrival(
                             pt["id"], reading, forecast, frames, state.last_bounds
                         )
+                        if result.cell_lat is not None:
+                            try:
+                                ew = await fetch_wind_700_at(fc, result.cell_lat, result.cell_lon)
+                                result.wind_echo_bearing_deg = ew["toward_deg"]
+                                result.wind_echo_speed_kmh = ew["speed_kmh"]
+                            except Exception as exc:
+                                log.debug("Viento en eco no disponible: %s", exc)
                         save_prediction(conn, result)
                     except Exception as exc:
                         log.warning("Error emitiendo predicción para %s: %s", pt["id"], exc)

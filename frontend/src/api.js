@@ -39,7 +39,9 @@ export async function getForecast(pointId) {
  * @typedef {{ point_id: string, raining_now: boolean, eta_minutes: number|null,
  *   confidence: number|null, horizon_minutes: number, cell_speed_kmh: number|null,
  *   cell_bearing_deg: number|null, cell_lat: number|null, cell_lon: number|null,
- *   bearing_cell_to_point_deg: number|null, generated_at: string, method: string }} NowcastResult
+ *   bearing_cell_to_point_deg: number|null,
+ *   wind_echo_bearing_deg: number|null, wind_echo_speed_kmh: number|null,
+ *   generated_at: string, method: string }} NowcastResult
  *
  * @param {string} pointId
  * @returns {Promise<{radar: object|null, radar_available: boolean, nowcast: NowcastResult|null, rainviewer_url: string|null}>}

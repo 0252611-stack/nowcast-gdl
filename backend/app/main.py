@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 from app import config
 from app.nowcast.engine import estimate_arrival
 from app.scheduler import RadarState, run_forecast_loop, run_radar_loop
-from app.sources.openmeteo import fetch_forecast
+from app.sources.openmeteo import fetch_forecast, fetch_wind_700_at
 from app.sources.rainviewer import fetch_tile_url as fetch_rainviewer_url
 from app.storage import (
     add_point,
@@ -158,6 +158,13 @@ async def get_radar(point_id: str):
             frames = get_recent_frames(app.state.db, 2)
             forecast = await fetch_forecast(client, pt["id"], pt["name"], pt["lat"], pt["lon"])
             nowcast = estimate_arrival(point_id, reading, forecast, frames, state.last_bounds)
+            if nowcast is not None and nowcast.cell_lat is not None:
+                try:
+                    ew = await fetch_wind_700_at(client, nowcast.cell_lat, nowcast.cell_lon)
+                    nowcast.wind_echo_bearing_deg = ew["toward_deg"]
+                    nowcast.wind_echo_speed_kmh = ew["speed_kmh"]
+                except Exception as exc_w:
+                    log.debug("Viento en eco no disponible: %s", exc_w)
         except Exception as exc:
             log.warning("Nowcast engine falló para %s: %s", point_id, exc)
 

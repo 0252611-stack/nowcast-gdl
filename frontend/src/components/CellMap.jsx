@@ -35,19 +35,24 @@ function rainviewerTemplate(url) {
   return `${prefix}/{z}/{x}/{y}/${color}/${suffix}`
 }
 
-/** Icono SVG de flecha que apunta según el bearing dado (0=Norte, 90=Este...) */
-function arrowIcon(bearing) {
+/** Flecha naranja sólida — dirección del eco por optical flow */
+function flowArrowIcon(bearing) {
   const svg = `<svg width="28" height="28" viewBox="0 0 28 28" xmlns="http://www.w3.org/2000/svg">
     <g transform="rotate(${bearing}, 14, 14)">
       <polygon points="14,3 24,24 14,19 4,24" fill="${theme.orange}" stroke="#FFFFFF" stroke-width="1.5"/>
     </g>
   </svg>`
-  return L.divIcon({
-    className: "",
-    html: svg,
-    iconSize: [28, 28],
-    iconAnchor: [14, 14],
-  })
+  return L.divIcon({ className: "", html: svg, iconSize: [28, 28], iconAnchor: [14, 14] })
+}
+
+/** Flecha azul hueca — dirección del viento 700 hPa medido en el eco */
+function windArrowIcon(bearing) {
+  const svg = `<svg width="22" height="22" viewBox="0 0 22 22" xmlns="http://www.w3.org/2000/svg">
+    <g transform="rotate(${bearing}, 11, 11)">
+      <polygon points="11,2 19,19 11,15 3,19" fill="none" stroke="${theme.primary}" stroke-width="2" stroke-linejoin="round"/>
+    </g>
+  </svg>`
+  return L.divIcon({ className: "", html: svg, iconSize: [22, 22], iconAnchor: [11, 11] })
 }
 
 /** Icono de marcador de punto monitoreado */
@@ -154,13 +159,13 @@ export default function CellMap({
         )
       })}
 
-      {/* Eco causante + flecha de dirección */}
+      {/* Eco causante + flechas de dirección */}
       {(focusPoint ? [focusPoint] : points).map(pt => {
         const nw = nowcasts[pt.id]
         if (!nw || nw.cell_lat == null || nw.cell_lon == null) return null
         const echoPos = [nw.cell_lat, nw.cell_lon]
         const ptPos = [pt.lat, pt.lon]
-        const bearing = nw.bearing_cell_to_point_deg ?? 0
+        const flowBearing = nw.cell_bearing_deg ?? 0
         return (
           <g key={`echo-${pt.id}`}>
             {/* Círculo del eco */}
@@ -171,13 +176,29 @@ export default function CellMap({
             >
               {!compact && (
                 <Tooltip>
-                  Eco causante · {nw.eta_minutes} min · {nw.cell_speed_kmh} km/h
+                  <div style={{ fontSize: "12px", lineHeight: "1.6" }}>
+                    <strong>Eco causante</strong><br />
+                    ETA: {nw.eta_minutes} min · {nw.cell_speed_kmh} km/h<br />
+                    <span style={{ color: theme.orange }}>▶ Flujo radar: {Math.round(flowBearing)}°</span>
+                    {nw.wind_echo_bearing_deg != null && (
+                      <><br /><span style={{ color: theme.primary }}>▷ Viento 700 hPa: {Math.round(nw.wind_echo_bearing_deg)}° · {nw.wind_echo_speed_kmh?.toFixed(0)} km/h</span></>
+                    )}
+                  </div>
                 </Tooltip>
               )}
             </CircleMarker>
 
-            {/* Flecha de dirección en el eco */}
-            <Marker position={echoPos} icon={arrowIcon(bearing)} />
+            {/* Flecha naranja sólida — optical flow del eco */}
+            <Marker position={echoPos} icon={flowArrowIcon(flowBearing)} />
+
+            {/* Flecha azul hueca — viento 700 hPa en el eco */}
+            {nw.wind_echo_bearing_deg != null && (
+              <Marker position={echoPos} icon={windArrowIcon(nw.wind_echo_bearing_deg)}>
+                {!compact && (
+                  <Tooltip>Viento 700 hPa en eco: {Math.round(nw.wind_echo_bearing_deg)}° · {nw.wind_echo_speed_kmh?.toFixed(0)} km/h</Tooltip>
+                )}
+              </Marker>
+            )}
 
             {/* Línea del eco al punto */}
             <Polyline
