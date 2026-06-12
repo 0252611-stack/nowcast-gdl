@@ -8,13 +8,13 @@
   color-scheme: light;
 
   /* Fondos */
-  --color-bg:           #F8FAFC;
+  --color-bg:           #FAFAFA;
   --color-surface:      #FFFFFF;
-  --color-surface-muted:#E9EEF6;
+  --color-surface-muted:#F4F4F5;
 
   /* Bordes */
-  --color-border:       #DBEAFE;
-  --color-border-mid:   #CBD5E1;
+  --color-border:       #E4E4E7;
+  --color-border-mid:   #D4D4D8;
 
   /* Texto */
   --color-text:         #1E293B;

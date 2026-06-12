@@ -5,14 +5,14 @@
  */
 
 export const theme = {
-  // Fondos
-  bg:          "#F8FAFC",
+  // Fondos — gris neutro sin tinte azul
+  bg:          "#FAFAFA",
   surface:     "#FFFFFF",
-  surfaceMuted:"#E9EEF6",
+  surfaceMuted:"#F4F4F5",
 
-  // Bordes y divisores
-  border:      "#DBEAFE",
-  borderMid:   "#CBD5E1",
+  // Bordes y divisores — gris neutro
+  border:      "#E4E4E7",
+  borderMid:   "#D4D4D8",
 
   // Texto (todos ≥4.5:1 sobre white/surface)
   text:        "#1E293B",   // ~13:1
