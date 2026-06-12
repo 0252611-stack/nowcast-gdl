@@ -1,5 +1,5 @@
 /** Tarjeta de un punto: estado ahora (radar dBZ, nowcast) + pronóstico próximas horas.
- *  Props: { point, forecast, radar, nowcast, loading? }
+ *  Props: { point, forecast, radar, nowcast, rainviewerUrl, loading? }
  */
 
 import RadarStatus from "./RadarStatus.jsx"
@@ -7,7 +7,15 @@ import WindCompass from "./WindCompass.jsx"
 import HourlyChart from "./HourlyChart.jsx"
 import CellMap from "./CellMap.jsx"
 import SourceTag from "./SourceTag.jsx"
+import { SunIcon, CloudRainIcon, ClockIcon, DropletIcon } from "./Icons.jsx"
 import { theme } from "../theme.js"
+
+/** Borde superior de color según estado de lluvia — comunica estado, no decoración */
+function cardAccent(nowcast) {
+  if (nowcast?.raining_now) return theme.green
+  if (nowcast?.eta_minutes != null) return theme.accent
+  return "transparent"
+}
 
 const s = {
   card: {
@@ -62,19 +70,19 @@ const s = {
     flexDirection: "column",
     gap: "4px",
   },
+  // Sin uppercase — jerarquía por peso y color, no por mayúsculas
   label: {
     fontSize: "11px",
     color: theme.textFaint,
-    textTransform: "uppercase",
-    letterSpacing: "0.06em",
+    letterSpacing: "0.02em",
     fontWeight: 600,
   },
   rainNowBadge: (raining) => ({
     display: "inline-flex",
     alignItems: "center",
-    gap: "5px",
+    gap: "6px",
     padding: "5px 12px",
-    borderRadius: "999px",
+    borderRadius: "8px",
     background: raining ? theme.greenLight : theme.surfaceMuted,
     border: `1px solid ${raining ? theme.green + "55" : theme.borderMid}`,
     color: raining ? "#166534" : theme.textMuted,
@@ -84,9 +92,9 @@ const s = {
   etaBadge: {
     display: "inline-flex",
     alignItems: "center",
-    gap: "5px",
+    gap: "6px",
     padding: "5px 12px",
-    borderRadius: "999px",
+    borderRadius: "8px",
     background: theme.accentLight,
     border: `1px solid ${theme.accent}55`,
     color: "#92400E",
@@ -113,8 +121,9 @@ const s = {
   probBadge: {
     display: "inline-flex",
     alignItems: "center",
-    padding: "4px 12px",
-    borderRadius: "999px",
+    gap: "6px",
+    padding: "5px 12px",
+    borderRadius: "8px",
     background: theme.primaryLight,
     border: `1px solid ${theme.primary}33`,
     color: theme.primary,
@@ -139,8 +148,7 @@ const s = {
   chartLabel: {
     fontSize: "11px",
     color: theme.textFaint,
-    textTransform: "uppercase",
-    letterSpacing: "0.06em",
+    letterSpacing: "0.02em",
     fontWeight: 600,
     marginBottom: "8px",
   },
@@ -200,9 +208,20 @@ export default function PointCard({ point, forecast, radar, nowcast, rainviewerU
   })()
 
   const radarAvailable = radar !== null && radar !== undefined
+  const accentColor = cardAccent(nowcast)
 
   return (
-    <article style={s.card}>
+    <article style={{
+      ...s.card,
+      // Borde superior de estado — propósito funcional (lluvia activa / ETA próxima)
+      borderTop: accentColor !== "transparent"
+        ? `3px solid ${accentColor}`
+        : `1px solid ${theme.border}`,
+      // Sombra más pronunciada cuando hay alerta activa
+      boxShadow: accentColor !== "transparent"
+        ? `0 2px 8px rgba(0,0,0,0.10), 0 8px 24px rgba(0,0,0,0.08)`
+        : theme.shadow,
+    }}>
       {/* ---- Header ---- */}
       <div style={s.header}>
         <div style={s.headerLeft}>
@@ -223,8 +242,8 @@ export default function PointCard({ point, forecast, radar, nowcast, rainviewerU
             <span style={s.label}>Ahora</span>
             <span style={s.rainNowBadge(nowcast?.raining_now)}>
               {nowcast?.raining_now
-                ? <span>🌧 Lloviendo</span>
-                : <span>☀️ Sin lluvia</span>
+                ? <><CloudRainIcon size={14} color="#16A34A" /> Lloviendo</>
+                : <><SunIcon size={14} color={theme.textMuted} /> Sin lluvia</>
               }
             </span>
             <SourceTag source="iam" />
@@ -234,7 +253,7 @@ export default function PointCard({ point, forecast, radar, nowcast, rainviewerU
             <div style={s.section}>
               <span style={s.label}>Lluvia en</span>
               <span style={s.etaBadge}>
-                ⏱{" "}
+                <ClockIcon size={14} color="#92400E" />
                 <span style={{ fontFamily: theme.fontMono, fontVariantNumeric: "tabular-nums" }}>
                   {nowcast.eta_minutes} min
                 </span>
@@ -293,10 +312,8 @@ export default function PointCard({ point, forecast, radar, nowcast, rainviewerU
             <div style={s.section}>
               <span style={s.label}>Prob. lluvia</span>
               <span style={s.probBadge}>
-                💧{" "}
-                <span style={{ fontFamily: theme.fontMono }}>
-                  {nearest.precipitation_probability}%
-                </span>
+                <DropletIcon size={13} color={theme.primary} />
+                {nearest.precipitation_probability}%
               </span>
               <SourceTag source="openmeteo" />
             </div>

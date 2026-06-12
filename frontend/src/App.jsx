@@ -164,7 +164,9 @@ export default function App() {
                       onClick={() => setSelectedPoint(selectedPoint === p.id ? null : p.id)}
                       aria-pressed={selectedPoint === p.id}
                     >
-                      {isRaining ? "🌧 " : "☀️ "}{p.name}
+                      {/* Indicador de estado — punto de color en vez de emoji */}
+                      <span style={st.chipDot(isRaining)} aria-hidden="true" />
+                      {p.name}
                     </button>
                   )
                 })}
@@ -351,6 +353,9 @@ const st = {
     alignItems: "center",
   },
   chip: (active, raining) => ({
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "7px",
     padding: "5px 14px",
     borderRadius: "999px",
     border: `1px solid ${active ? theme.primary : raining ? theme.green + "55" : theme.borderMid}`,
@@ -360,6 +365,14 @@ const st = {
     fontWeight: 600,
     cursor: "pointer",
     transition: "background 0.15s, border-color 0.15s",
+  }),
+  chipDot: (raining) => ({
+    display: "inline-block",
+    width: "7px",
+    height: "7px",
+    borderRadius: "50%",
+    background: raining ? theme.green : theme.borderMid,
+    flexShrink: 0,
   }),
   clearBtn: {
     padding: "5px 14px",

@@ -15,6 +15,7 @@ import {
   ResponsiveContainer,
 } from "recharts"
 import SourceTag from "./SourceTag.jsx"
+import { CloudRainIcon, DropletIcon, ThermometerIcon, WindIcon } from "./Icons.jsx"
 import { theme } from "../theme.js"
 
 /** Formatea ISO datetime → "HH:mm" en hora local */
@@ -26,6 +27,16 @@ function fmtHour(isoStr) {
     hour12: false,
     timeZone: "America/Mexico_City",
   })
+}
+
+function TooltipRow({ icon, label, value }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px" }}>
+      {icon}
+      <span style={{ color: theme.textMuted, minWidth: "70px" }}>{label}</span>
+      <strong style={{ fontFamily: theme.fontMono, color: theme.text }}>{value}</strong>
+    </div>
+  )
 }
 
 const CustomTooltip = ({ active, payload, label }) => {
@@ -43,11 +54,13 @@ const CustomTooltip = ({ active, payload, label }) => {
       minWidth: "180px",
       boxShadow: theme.shadow,
     }}>
-      <p style={{ fontWeight: 700, marginBottom: "6px", color: theme.primary }}>{label}</p>
-      <p>🌧 Precip: <strong style={{ fontFamily: theme.fontMono }}>{data.precipitation_mm} mm</strong></p>
-      <p>☁️ Prob lluvia: <strong style={{ fontFamily: theme.fontMono }}>{data.precipitation_probability}%</strong></p>
-      <p>🌡 Temp: <strong style={{ fontFamily: theme.fontMono }}>{data.temperature_c} °C</strong></p>
-      <p>💨 Viento 10m: <strong style={{ fontFamily: theme.fontMono }}>{data.wind_speed_10m_kmh} km/h</strong></p>
+      <p style={{ fontWeight: 700, marginBottom: "8px", color: theme.primary, fontFamily: theme.fontMono }}>{label}</p>
+      <div style={{ display: "flex", flexDirection: "column", gap: "5px" }}>
+        <TooltipRow icon={<CloudRainIcon size={13} color={theme.primary} />} label="Precip" value={`${data.precipitation_mm} mm`} />
+        <TooltipRow icon={<DropletIcon size={13} color={theme.accent} />} label="Prob. lluvia" value={`${data.precipitation_probability}%`} />
+        <TooltipRow icon={<ThermometerIcon size={13} color={theme.red} />} label="Temp" value={`${data.temperature_c} °C`} />
+        <TooltipRow icon={<WindIcon size={13} color={theme.textMuted} />} label="Viento 10 m" value={`${data.wind_speed_10m_kmh} km/h`} />
+      </div>
     </div>
   )
 }
