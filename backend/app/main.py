@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 
 from app import config
 from app.nowcast.engine import estimate_arrival
-from app.processing.motion import compute_cell_motion, find_context_echoes
+from app.processing.motion import compute_cell_motion, find_context_echoes, find_echo_contours
 from app.scheduler import RadarState, run_forecast_loop, run_radar_loop
 from app.schemas import ContextEcho, WindSample
 from app.sources.openmeteo import fetch_forecast, fetch_wind_700_at, sample_trajectory_wind
@@ -52,6 +52,8 @@ async def lifespan(app: FastAPI):
     app.state.radar_state = state
     app.state.rainviewer_url: str | None = None
     app.state.rainviewer_url_ts: float = 0.0
+    # Cache de contornos: (frame_time, contours) — global, reutilizable entre puntos
+    app.state.echo_contours_cache: tuple | None = None
     log.info("Nowcast GDL iniciado. Scheduler activo.")
     try:
         yield
@@ -170,6 +172,7 @@ async def get_radar(point_id: str):
     nowcast = None
     rainviewer_url = None
     context_echoes: list[ContextEcho] = []
+    echo_contours: list[list[list[float]]] = []
 
     async with httpx.AsyncClient(
         headers={"User-Agent": config.USER_AGENT}, timeout=10
@@ -197,7 +200,7 @@ async def get_radar(point_id: str):
                 except Exception as exc_t:
                     log.debug("Trajectory wind no disponible: %s", exc_t)
 
-            # Ecos de contexto — solo necesita 1 frame; movimiento es opcional (para la flecha)
+            # Ecos de contexto + contornos — solo necesita 1 frame
             try:
                 if len(frames) >= 1 and state.last_bounds:
                     newer_bytes, newer_time = frames[0]
@@ -215,6 +218,14 @@ async def get_radar(point_id: str):
                         img, state.last_bounds, bearing, speed
                     )
                     context_echoes = [ContextEcho(**e) for e in raw]
+
+                    # Contornos: reusar si el frame no cambió (globalespor imagen)
+                    cached = app.state.echo_contours_cache
+                    if cached is not None and cached[0] == newer_time:
+                        echo_contours = cached[1]
+                    else:
+                        echo_contours = find_echo_contours(img, state.last_bounds)
+                        app.state.echo_contours_cache = (newer_time, echo_contours)
             except Exception as exc_ce:
                 log.debug("Context echoes no disponibles: %s", exc_ce)
 
@@ -234,6 +245,7 @@ async def get_radar(point_id: str):
         "nowcast": nowcast,
         "rainviewer_url": rainviewer_url,
         "context_echoes": context_echoes,
+        "echo_contours": echo_contours,
         "radar_bounds": state.last_bounds,
     }
 

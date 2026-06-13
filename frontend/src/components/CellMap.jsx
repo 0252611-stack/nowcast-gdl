@@ -15,7 +15,7 @@
 import { useEffect } from "react"
 import {
   MapContainer, TileLayer, ImageOverlay,
-  Marker, Polyline, CircleMarker, Tooltip, useMap,
+  Marker, Polygon, Polyline, CircleMarker, Tooltip, useMap,
 } from "react-leaflet"
 import L from "leaflet"
 import "leaflet/dist/leaflet.css"
@@ -162,6 +162,7 @@ export default function CellMap({
   compact       = false,
   height        = "300px",
   contextEchoes = [],
+  echoContours  = [],
   radarImageUrl = null,
   radarBounds   = null,
 }) {
@@ -226,6 +227,15 @@ export default function CellMap({
       {!radarImageUrl && rvTemplate && (
         <TileLayer url={rvTemplate} opacity={0.6} attribution="RainViewer" />
       )}
+
+      {/* Contornos de eco — línea slate alrededor de cada masa de precipitación */}
+      {!compact && echoContours.map((ring, i) => (
+        <Polygon
+          key={`ec-${i}`}
+          positions={ring}
+          pathOptions={{ color: theme.text, weight: 1.5, opacity: 0.75, fill: false }}
+        />
+      ))}
 
       {/* Flechas de dirección del campo — posicionadas sobre los ecos más fuertes */}
       {arrowPositions.map((ce, i) => (

@@ -277,3 +277,45 @@ async def test_fetch_current_frame_same_url():
 
     with pytest.raises(RadarUnavailable, match="same frame"):
         await fetch_current_frame(mock_client, last_kmz_url=existing_url)
+
+
+# ---------------------------------------------------------------------------
+# Test 8: find_echo_contours — real fixture
+# ---------------------------------------------------------------------------
+
+def test_find_echo_contours_returns_polygons():
+    """find_echo_contours con frame1.png devuelve polígonos válidos dentro de bounds."""
+    from app.processing.motion import find_echo_contours
+    from app.processing.pixel_extract import set_legend_path
+
+    set_legend_path(str(FIXTURES / "leyenda.png"))
+    image = Image.open(FIXTURES / "frame1.png")
+    bounds = EXPECTED_BOUNDS
+
+    contours = find_echo_contours(image, bounds)
+
+    assert isinstance(contours, list)
+    assert len(contours) > 0, "frame1.png tiene ecos — debe devolver al menos un contorno"
+
+    for ring in contours:
+        assert isinstance(ring, list)
+        assert len(ring) >= 3, "Cada polígono debe tener al menos 3 vértices"
+        for point in ring:
+            lat, lon = point[0], point[1]
+            # Dentro de bounds con holgura de 1 grado (simplificación puede sacar 1 px)
+            assert bounds["south"] - 1.0 <= lat <= bounds["north"] + 1.0
+            assert bounds["west"] - 1.0 <= lon <= bounds["east"] + 1.0
+
+
+def test_find_echo_contours_empty_image():
+    """Una imagen completamente transparente devuelve lista vacía."""
+    from app.processing.motion import find_echo_contours
+    from app.processing.pixel_extract import set_legend_path
+
+    set_legend_path(str(FIXTURES / "leyenda.png"))
+    # Crear imagen RGBA completamente transparente
+    img = Image.new("RGBA", (100, 100), (0, 0, 0, 0))
+
+    contours = find_echo_contours(img, EXPECTED_BOUNDS)
+
+    assert contours == []

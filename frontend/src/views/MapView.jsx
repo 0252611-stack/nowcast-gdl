@@ -14,6 +14,7 @@ export default function MapView() {
   const [nowcasts, setNowcasts] = useState({})
   const [rainviewerUrl, setRainviewerUrl] = useState(null)
   const [contextEchoes, setContextEchoes] = useState([])
+  const [echoContours, setEchoContours] = useState([])
   const [radarBounds, setRadarBounds] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -50,6 +51,9 @@ export default function MapView() {
           return true
         })
         setContextEchoes(deduped)
+
+        // Contornos — son globales (misma imagen), tomar el primer resultado no vacío
+        setEchoContours(results.find(r => r.echo_contours?.length)?.echo_contours ?? [])
       } catch (e) {
         if (!cancelled) setError(e.message)
       } finally {
@@ -86,6 +90,7 @@ export default function MapView() {
               rainviewerUrl={rainviewerUrl}
               height="calc(100vh - 220px)"
               contextEchoes={contextEchoes}
+              echoContours={echoContours}
               radarImageUrl={radarImageUrl}
               radarBounds={radarBounds}
             />
@@ -113,6 +118,10 @@ export default function MapView() {
                 <polygon points="7,1 12,12 7,9 2,12" fill="none" stroke={theme.primary} strokeWidth="1.5"/>
               </svg>
               Viento 700 hPa
+            </span>
+            <span style={st.legendItem}>
+              <span style={{ display: "inline-block", width: "20px", height: "3px", background: theme.text, verticalAlign: "middle", marginRight: "2px", opacity: 0.75 }} />
+              Contorno del eco
             </span>
             <span style={st.legendItem}>
               <span style={{ display: "inline-block", width: "20px", height: "3px", background: theme.green, verticalAlign: "middle", marginRight: "2px" }} />

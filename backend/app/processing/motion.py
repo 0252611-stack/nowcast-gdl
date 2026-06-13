@@ -310,3 +310,94 @@ def project_cell(
     confidence = round(0.5 * conf_wind + 0.5 * conf_dir, 3)
 
     return {"eta_minutes": int(eta_min), "confidence": confidence}
+
+
+def find_echo_contours(
+    image: Image.Image,
+    bounds: dict[str, float],
+    min_dbz: float = 0.0,
+    min_area_px: int = 10,
+    smooth_kernel: int = 5,
+    epsilon_px: float = 2.0,
+    max_contours: int = 40,
+) -> list[list[list[float]]]:
+    """Traza el contorno EXTERNO de cada eco (dBZ >= min_dbz) en la imagen del
+    radar y devuelve una lista de polígonos en coordenadas geográficas.
+
+    Cada polígono es una lista de puntos [lat, lon] lista para pasar a Leaflet
+    Polygon. Se aplica MORPH_CLOSE para rellenar huecos menores al kernel, luego
+    se procesa cada componente conectado por separado con findContours.
+
+    min_dbz: umbral mínimo de dBZ para incluir el píxel en la máscara (0.0 =
+             todo eco detectable, excluye solo el fondo transparente).
+    min_area_px: descartar contornos con área de polígono < N px² (elimina ruido).
+    smooth_kernel: tamaño del kernel de MORPH_CLOSE (rellena huecos pequeños).
+    epsilon_px: tolerancia de simplificación Douglas-Peucker en píxeles.
+    max_contours: límite máximo de contornos devueltos (los N con mayor área).
+    """
+    from app.processing.colormap import DBZ_MIN
+
+    arr = np.array(image.convert("RGBA"))
+    H, W = arr.shape[:2]
+    alpha = arr[:, :, 3]
+
+    ys, xs = np.where(alpha > 0)
+    if len(xs) == 0:
+        return []
+
+    # Colormap lookup vectorizado: asignar dBZ a cada píxel con eco
+    cmap = _get_colormap()
+    cmap_colors = np.array(list(cmap.keys()), dtype=np.float32)
+    cmap_dbzs = np.array(list(cmap.values()), dtype=np.float32)
+
+    rgb = arr[ys, xs, :3].astype(np.float32)
+    diffs = rgb[:, np.newaxis, :] - cmap_colors[np.newaxis, :, :]
+    dists_sq = (diffs ** 2).sum(axis=2)
+    best_idx = dists_sq.argmin(axis=1)
+    dbzs = cmap_dbzs[best_idx]
+
+    # Construir máscara H×W
+    dbz_grid = np.full((H, W), DBZ_MIN, dtype=np.float32)
+    dbz_grid[ys, xs] = dbzs
+    mask = ((dbz_grid >= min_dbz) & (alpha > 0)).astype(np.uint8) * 255
+
+    # MORPH_CLOSE: rellena huecos < kernel para suavizar bordes irregulares.
+    # No se aplica MORPH_OPEN porque los ecos del radar son píxeles dispersos
+    # que se erosionarían completamente.
+    k = np.ones((smooth_kernel, smooth_kernel), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k)
+
+    # Procesar cada componente conectado por separado: findContours sobre toda
+    # la máscara devuelve un único contorno envolvente cuando los componentes
+    # son muy dispersos (el background conecta todos los "huecos").
+    n_labels, labels = cv2.connectedComponents(mask)
+
+    north = bounds["north"]
+    south = bounds["south"]
+    east = bounds["east"]
+    west = bounds["west"]
+
+    result: list[tuple[float, list[list[float]]]] = []
+    for lbl in range(1, n_labels):
+        comp_mask = (labels == lbl).astype(np.uint8) * 255
+        contours_c, _ = cv2.findContours(comp_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours_c:
+            continue
+        # Tomar el contorno más grande del componente
+        c = max(contours_c, key=cv2.contourArea)
+        area = cv2.contourArea(c)
+        if area < min_area_px:
+            continue
+        simplified = cv2.approxPolyDP(c, epsilon_px, True)
+        if len(simplified) < 3:
+            continue
+        ring: list[list[float]] = []
+        for pt in simplified:
+            x, y = float(pt[0][0]), float(pt[0][1])
+            lat = round(north - (y / H) * (north - south), 5)
+            lon = round(west + (x / W) * (east - west), 5)
+            ring.append([lat, lon])
+        result.append((area, ring))
+
+    result.sort(key=lambda t: t[0], reverse=True)
+    return [ring for _, ring in result[:max_contours]]
