@@ -240,7 +240,7 @@ def test_engine_radar_unavailable():
 
 
 def test_engine_raining_now():
-    """dBZ=25 > threshold=18 → raining_now=True, eta=0, method=radar_current."""
+    """dBZ=25 >= DBZ_RAIN_THRESHOLD=-10 → raining_now=True, eta=0, method=radar_current."""
     reading = _mock_reading(dbz=25.0)
     result = estimate_arrival("centro", reading, _mock_forecast(), [], None)
     assert result.raining_now is True
@@ -250,8 +250,8 @@ def test_engine_raining_now():
 
 
 def test_engine_insufficient_frames():
-    """Sin frames → method=insufficient_frames."""
-    reading = _mock_reading(dbz=5.0)
+    """Sin frames + eco ruido → method=insufficient_frames."""
+    reading = _mock_reading(dbz=-15.0)
     result = estimate_arrival("centro", reading, _mock_forecast(), [], None)
     assert result.method == "insufficient_frames"
     assert not result.raining_now
@@ -259,7 +259,7 @@ def test_engine_insufficient_frames():
 
 def test_engine_insufficient_frames_no_bounds():
     """2 frames pero bounds=None → method=insufficient_frames."""
-    reading = _mock_reading(dbz=5.0)
+    reading = _mock_reading(dbz=-15.0)
     t0 = datetime(2026, 6, 11, 4, 0, tzinfo=timezone.utc)
     t1 = datetime(2026, 6, 11, 4, 1, tzinfo=timezone.utc)
     frames = [(_frame1_bytes(), t1), (_frame1_bytes(), t0)]
@@ -268,8 +268,8 @@ def test_engine_insufficient_frames_no_bounds():
 
 
 def test_engine_advection_valid_result():
-    """Frames con eco + not raining → NowcastResult válido con method reconocido."""
-    reading = _mock_reading(dbz=5.0)
+    """Frames con eco ruido + not raining → NowcastResult válido con method reconocido."""
+    reading = _mock_reading(dbz=-15.0)
     t0 = datetime(2026, 6, 11, 4, 0, tzinfo=timezone.utc)
     t1 = datetime(2026, 6, 11, 4, 1, 30, tzinfo=timezone.utc)
 

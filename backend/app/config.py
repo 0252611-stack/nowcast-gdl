@@ -17,7 +17,8 @@ POINTS: list[dict] = [
 USER_AGENT = "NowcastGDL/0.1 (proyecto academico)"
 POLL_INTERVAL_SECONDS = 90
 RADAR_FAIL_THRESHOLD = 3        # Fallos consecutivos → degradar a solo Open-Meteo
-DBZ_THRESHOLD = 18.0            # Mínimo dBZ operativo para nowcasting ("Ligera")
+DBZ_THRESHOLD = 18.0            # Mínimo dBZ para tracking de movimiento (optical flow)
+DBZ_RAIN_THRESHOLD = -10.0      # Mínimo dBZ para "lloviendo ahora" — frontera Ruido/Débil del IAM
 RADAR_RETENTION_HOURS = 24      # Frames SQLite a retener (~960 frames)
 
 # --- Persistencia ---

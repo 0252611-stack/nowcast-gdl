@@ -55,10 +55,10 @@ def estimate_arrival(
     if radar is None:
         return _result(method="radar_unavailable")
 
-    # 2. ¿Lloviendo ahora?
-    raining_now = radar.dbz > config.DBZ_THRESHOLD
+    # 2. ¿Lloviendo ahora? Cualquier eco no-ruido (≥ DBZ_RAIN_THRESHOLD) cuenta como lluvia.
+    raining_now = radar.dbz >= config.DBZ_RAIN_THRESHOLD
     if raining_now:
-        conf = min(1.0, (radar.dbz - config.DBZ_THRESHOLD) / (55.0 - config.DBZ_THRESHOLD))
+        conf = min(1.0, (radar.dbz - config.DBZ_RAIN_THRESHOLD) / (55.0 - config.DBZ_RAIN_THRESHOLD))
         return _result(raining_now=True, eta_minutes=0, confidence=round(conf, 3),
                        method="radar_current")
 

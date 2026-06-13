@@ -7,7 +7,7 @@ import WindCompass from "./WindCompass.jsx"
 import HourlyChart from "./HourlyChart.jsx"
 import CellMap from "./CellMap.jsx"
 import SourceTag from "./SourceTag.jsx"
-import { SunIcon, CloudRainIcon, ClockIcon, DropletIcon } from "./Icons.jsx"
+import { SunIcon, CloudRainIcon, ClockIcon, DropletIcon, CloudIcon } from "./Icons.jsx"
 import { theme } from "../theme.js"
 
 /** Borde superior de color según estado de lluvia — comunica estado, no decoración */
@@ -89,6 +89,18 @@ const s = {
     fontSize: "13px",
     fontWeight: 600,
   }),
+  weakEchoBadge: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "6px",
+    padding: "5px 12px",
+    borderRadius: "8px",
+    background: theme.yellowLight,
+    border: `1px solid ${theme.yellow}55`,
+    color: "#854D0E",
+    fontSize: "13px",
+    fontWeight: 600,
+  },
   etaBadge: {
     display: "inline-flex",
     alignItems: "center",
@@ -209,6 +221,8 @@ export default function PointCard({ point, forecast, radar, nowcast, rainviewerU
 
   const radarAvailable = radar !== null && radar !== undefined
   const accentColor = cardAccent(nowcast)
+  // Eco presente pero por debajo del umbral de lluvia operacional (18 dBZ)
+  const hasWeakEcho = !nowcast?.raining_now && radar?.category === "Débil"
 
   return (
     <article style={{
@@ -240,10 +254,12 @@ export default function PointCard({ point, forecast, radar, nowcast, rainviewerU
         <div style={s.row}>
           <div style={s.section}>
             <span style={s.label}>Ahora</span>
-            <span style={s.rainNowBadge(nowcast?.raining_now)}>
+            <span style={hasWeakEcho ? s.weakEchoBadge : s.rainNowBadge(nowcast?.raining_now)}>
               {nowcast?.raining_now
                 ? <><CloudRainIcon size={14} color="#16A34A" /> Lloviendo</>
-                : <><SunIcon size={14} color={theme.textMuted} /> Sin lluvia</>
+                : hasWeakEcho
+                  ? <><CloudIcon size={14} color="#854D0E" /> Eco débil</>
+                  : <><SunIcon size={14} color={theme.textMuted} /> Sin lluvia</>
               }
             </span>
             <SourceTag source="iam" />
