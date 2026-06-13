@@ -35,13 +35,6 @@ def latlon_to_pixel(
     return int(round(x)), int(round(y))
 
 
-def extract_pixel_color(image: Image.Image, x: int, y: int) -> tuple[int, int, int]:
-    """Devuelve el color RGB del pixel (x, y) en la imagen del radar."""
-    pixel = image.getpixel((x, y))
-    # Return only RGB, ignoring alpha channel if present
-    return (pixel[0], pixel[1], pixel[2])
-
-
 def reading_for_point(
     point_id: str,
     lat: float,
@@ -50,44 +43,58 @@ def reading_for_point(
     image: Image.Image,
     scan_time_utc: datetime,
     frame_age_seconds: float,
+    neighborhood: int = 2,
 ) -> RadarReading:
-    """Pipeline completo lat/lon → pixel → color → dBZ → RadarReading.
+    """Pipeline completo lat/lon → vecindad de píxeles → max dBZ → RadarReading.
 
-    Llama a latlon_to_pixel, extract_pixel_color, y colormap.color_to_dbz.
-    Devuelve un RadarReading validado. Lanza ValueError si el pixel cae
-    fuera del bounds de la imagen.
+    Lee una ventana de (2*neighborhood+1)² píxeles centrada en el punto y
+    devuelve el máximo dBZ encontrado entre los píxeles con alpha > 0.
+    Con neighborhood=2 la ventana es 5×5 (≈ 1-2 km según resolución del radar),
+    lo que absorbe el error de cuantización lat/lon→px (< 2 px ≈ 300-600 m) y
+    detecta lluvia que empieza en el borde del punto.
+
+    Píxeles con alpha=0 se ignoran (son fondo sin eco); si toda la ventana es
+    transparente devuelve dBZ=-31.5 (Ruido).
+
+    Lanza ValueError si el centro del punto cae fuera del bounds de la imagen.
     """
     img_width, img_height = image.size
+    cx, cy = latlon_to_pixel(lat, lon, bounds, img_width, img_height)
 
-    x, y = latlon_to_pixel(lat, lon, bounds, img_width, img_height)
-
-    # Validate pixel is within image bounds
-    if not (0 <= x < img_width and 0 <= y < img_height):
+    if not (0 <= cx < img_width and 0 <= cy < img_height):
         raise ValueError(
-            f"Pixel ({x}, {y}) out of image bounds "
-            f"({img_width}x{img_height}) for lat={lat}, lon={lon}"
+            f"Pixel ({cx}, {cy}) fuera de los bounds "
+            f"({img_width}×{img_height}) para lat={lat}, lon={lon}"
         )
 
-    color = extract_pixel_color(image, x, y)
-
-    # Load colormap from the legend (lazy import to avoid circular deps)
-    # We use a module-level cached colormap if available
     cmap = _get_colormap()
+    rgba = image.convert("RGBA")
 
-    dbz = colormap_module.color_to_dbz(color, cmap)
-    # Clamp dBZ to valid Pydantic range
-    dbz = max(-31.5, min(78.0, dbz))
+    best_dbz = colormap_module.DBZ_MIN
+    best_x, best_y = cx, cy
 
-    category = colormap_module.dbz_to_category(dbz)
+    for dy in range(-neighborhood, neighborhood + 1):
+        for dx in range(-neighborhood, neighborhood + 1):
+            px, py = cx + dx, cy + dy
+            if not (0 <= px < img_width and 0 <= py < img_height):
+                continue
+            r, g, b, a = rgba.getpixel((px, py))
+            if a == 0:
+                continue  # fondo transparente = sin eco
+            dbz = colormap_module.color_to_dbz((r, g, b), cmap)
+            if dbz > best_dbz:
+                best_dbz = dbz
+                best_x, best_y = px, py
 
+    best_dbz = max(colormap_module.DBZ_MIN, min(colormap_module.DBZ_MAX, best_dbz))
     return RadarReading(
         point_id=point_id,
-        dbz=dbz,
-        category=category,
+        dbz=best_dbz,
+        category=colormap_module.dbz_to_category(best_dbz),
         scan_time_utc=scan_time_utc,
         frame_age_seconds=frame_age_seconds,
-        pixel_x=x,
-        pixel_y=y,
+        pixel_x=best_x,
+        pixel_y=best_y,
     )
 
 
