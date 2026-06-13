@@ -12,6 +12,7 @@ from contextlib import asynccontextmanager
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from PIL import Image
 from pydantic import BaseModel, Field
 
@@ -118,6 +119,19 @@ def _get_point(db: sqlite3.Connection, point_id: str) -> dict:
 # Endpoints de lectura
 # ---------------------------------------------------------------------------
 
+@app.get("/radar/image")
+async def get_radar_image():
+    """Último frame del radar IAM como PNG con fondo transparente."""
+    frames = get_recent_frames(app.state.db, 1)
+    if not frames:
+        raise HTTPException(404, "No hay frames de radar disponibles")
+    return Response(
+        content=frames[0][0],
+        media_type="image/png",
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
 @app.get("/metrics")
 async def metrics():
     """Métricas de verificación del motor de nowcasting (POD, FAR, CSI, accuracy)."""
@@ -220,6 +234,7 @@ async def get_radar(point_id: str):
         "nowcast": nowcast,
         "rainviewer_url": rainviewer_url,
         "context_echoes": context_echoes,
+        "radar_bounds": state.last_bounds,
     }
 
 

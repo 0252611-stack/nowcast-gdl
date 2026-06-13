@@ -1,6 +1,5 @@
 /**
- * Vista /mapa — Mapa interactivo con radar RainViewer y todos los puntos monitoreados.
- * Muestra ecos causantes y flechas de dirección cuando hay ETA activa.
+ * Vista /mapa — Mapa interactivo con radar IAM como ImageOverlay y puntos monitoreados.
  */
 
 import { useState, useEffect } from "react"
@@ -8,11 +7,14 @@ import CellMap from "../components/CellMap.jsx"
 import { getPoints, getRadar } from "../api.js"
 import { theme } from "../theme.js"
 
+const API_BASE = import.meta.env.VITE_API_URL ?? "http://localhost:8000"
+
 export default function MapView() {
   const [points, setPoints] = useState([])
   const [nowcasts, setNowcasts] = useState({})
   const [rainviewerUrl, setRainviewerUrl] = useState(null)
   const [contextEchoes, setContextEchoes] = useState([])
+  const [radarBounds, setRadarBounds] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
 
@@ -25,16 +27,20 @@ export default function MapView() {
         setPoints(pts)
         const results = await Promise.all(pts.map(pt => getRadar(pt.id)))
         if (cancelled) return
+
         const nw = {}
         let rvUrl = null
+        let bounds = null
         pts.forEach((pt, i) => {
           nw[pt.id] = results[i].nowcast ?? null
           if (!rvUrl && results[i].rainviewer_url) rvUrl = results[i].rainviewer_url
+          if (!bounds && results[i].radar_bounds)  bounds = results[i].radar_bounds
         })
         setNowcasts(nw)
         setRainviewerUrl(rvUrl)
+        setRadarBounds(bounds)
 
-        // Deduplicar ecos de contexto de todas las respuestas (son iguales entre puntos)
+        // Deduplicar ecos de contexto (mismos datos en todas las respuestas)
         const allEchoes = results.flatMap(r => r.context_echoes ?? [])
         const seen = new Set()
         const deduped = allEchoes.filter(ce => {
@@ -55,6 +61,7 @@ export default function MapView() {
   }, [])
 
   const rainInfo = Object.values(nowcasts).filter(n => n?.eta_minutes != null && !n.raining_now)
+  const radarImageUrl = radarBounds ? `${API_BASE}/radar/image` : null
 
   return (
     <div style={st.container}>
@@ -79,6 +86,8 @@ export default function MapView() {
               rainviewerUrl={rainviewerUrl}
               height="calc(100vh - 220px)"
               contextEchoes={contextEchoes}
+              radarImageUrl={radarImageUrl}
+              radarBounds={radarBounds}
             />
           </div>
 
@@ -94,13 +103,10 @@ export default function MapView() {
               <span style={{ ...st.dot, background: theme.orange }} /> Eco causante
             </span>
             <span style={st.legendItem}>
-              <span style={{ ...st.dot, background: "#94A3B8" }} /> Eco de contexto
-            </span>
-            <span style={st.legendItem}>
               <svg width="14" height="14" viewBox="0 0 14 14" style={{ flexShrink: 0 }}>
                 <polygon points="7,1 12,12 7,9 2,12" fill={theme.orange} stroke="#fff" strokeWidth="0.8"/>
               </svg>
-              Dirección del eco (radar)
+              Dirección del campo (radar)
             </span>
             <span style={st.legendItem}>
               <svg width="14" height="14" viewBox="0 0 14 14" style={{ flexShrink: 0 }}>
@@ -124,22 +130,18 @@ export default function MapView() {
 }
 
 const st = {
-  container: { padding: "24px", maxWidth: "1280px", margin: "0 auto", width: "100%" },
-  header: { display: "flex", alignItems: "center", gap: "16px", marginBottom: "16px", flexWrap: "wrap" },
-  title: { fontSize: "18px", fontWeight: 700, color: theme.text, margin: 0 },
+  container:  { padding: "24px", maxWidth: "1280px", margin: "0 auto", width: "100%" },
+  header:     { display: "flex", alignItems: "center", gap: "16px", marginBottom: "16px", flexWrap: "wrap" },
+  title:      { fontSize: "18px", fontWeight: 700, color: theme.text, margin: 0 },
   alert: {
-    padding: "4px 14px",
-    borderRadius: "999px",
-    background: theme.accentLight,
-    border: `1px solid ${theme.accent}55`,
-    color: "#92400E",
-    fontSize: "12px",
-    fontWeight: 600,
+    padding: "4px 14px", borderRadius: "999px",
+    background: theme.accentLight, border: `1px solid ${theme.accent}55`,
+    color: "#92400E", fontSize: "12px", fontWeight: 600,
   },
   mapWrapper: { borderRadius: "14px", overflow: "hidden", border: `1px solid ${theme.border}`, boxShadow: theme.shadow },
-  status: { color: theme.textFaint, textAlign: "center", padding: "40px 0" },
-  error: { color: theme.red, textAlign: "center", padding: "40px 0" },
-  legend: { display: "flex", gap: "20px", flexWrap: "wrap", marginTop: "12px" },
+  status:     { color: theme.textFaint, textAlign: "center", padding: "40px 0" },
+  error:      { color: theme.red,       textAlign: "center", padding: "40px 0" },
+  legend:     { display: "flex", gap: "20px", flexWrap: "wrap", marginTop: "12px" },
   legendItem: { display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: theme.textMuted },
-  dot: { display: "inline-block", width: "10px", height: "10px", borderRadius: "50%" },
+  dot:        { display: "inline-block", width: "10px", height: "10px", borderRadius: "50%" },
 }

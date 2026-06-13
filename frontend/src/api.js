@@ -48,7 +48,8 @@ export async function getForecast(pointId) {
  *
  * @param {string} pointId
  * @returns {Promise<{radar: object|null, radar_available: boolean, nowcast: NowcastResult|null,
- *   rainviewer_url: string|null, context_echoes: ContextEcho[]}>}
+ *   rainviewer_url: string|null, context_echoes: ContextEcho[],
+ *   radar_bounds: {north: number, south: number, east: number, west: number}|null}>}
  */
 export async function getRadar(pointId) {
   return fetchJson(`/points/${pointId}/radar`);
