@@ -211,7 +211,7 @@ export default function CellMap({
       {/* Ajustar bounds automáticamente */}
       {!compact && !focusPoint && points.length > 1 && <BoundsFitter points={points} />}
 
-      {/* Ecos de contexto (no causantes) — círculo gris + flecha corta */}
+      {/* Ecos de contexto (no causantes) — círculo gris + flecha corta si hay movimiento */}
       {visibleContextEchoes.map((ce, i) => (
         <g key={`ctx-${i}`}>
           <CircleMarker
@@ -220,10 +220,12 @@ export default function CellMap({
             pathOptions={{ color: CONTEXT_COLOR, fillColor: CONTEXT_COLOR, fillOpacity: 0.3, weight: 1.5 }}
           >
             <Tooltip>
-              Eco · {ce.dbz.toFixed(0)} dBZ · {ce.speed_kmh.toFixed(0)} km/h
+              Eco · {ce.dbz.toFixed(0)} dBZ{ce.speed_kmh > 0 ? ` · ${ce.speed_kmh.toFixed(0)} km/h` : ""}
             </Tooltip>
           </CircleMarker>
-          <Marker position={[ce.lat, ce.lon]} icon={contextArrowIcon(ce.bearing_deg)} />
+          {ce.speed_kmh > 0 && (
+            <Marker position={[ce.lat, ce.lon]} icon={contextArrowIcon(ce.bearing_deg)} />
+          )}
         </g>
       ))}
 

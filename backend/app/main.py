@@ -183,22 +183,24 @@ async def get_radar(point_id: str):
                 except Exception as exc_t:
                     log.debug("Trajectory wind no disponible: %s", exc_t)
 
-            # Ecos de contexto (campo completo, no solo upstream)
+            # Ecos de contexto — solo necesita 1 frame; movimiento es opcional (para la flecha)
             try:
-                if len(frames) >= 2 and state.last_bounds:
+                if len(frames) >= 1 and state.last_bounds:
                     newer_bytes, newer_time = frames[0]
-                    older_bytes, older_time = frames[1]
-                    interval_s = max(1.0, (newer_time - older_time).total_seconds())
-                    motion = compute_cell_motion(
-                        older_bytes, newer_bytes, interval_s, state.last_bounds
-                    )
-                    if motion["speed_kmh"] >= 0.1:
-                        img = Image.open(io.BytesIO(newer_bytes))
-                        raw = find_context_echoes(
-                            img, state.last_bounds,
-                            motion["bearing_deg"], motion["speed_kmh"],
+                    bearing, speed = 0.0, 0.0
+                    if len(frames) >= 2:
+                        older_bytes, older_time = frames[1]
+                        interval_s = max(1.0, (newer_time - older_time).total_seconds())
+                        m = compute_cell_motion(
+                            older_bytes, newer_bytes, interval_s, state.last_bounds
                         )
-                        context_echoes = [ContextEcho(**e) for e in raw]
+                        bearing = m["bearing_deg"]
+                        speed = m["speed_kmh"]
+                    img = Image.open(io.BytesIO(newer_bytes))
+                    raw = find_context_echoes(
+                        img, state.last_bounds, bearing, speed
+                    )
+                    context_echoes = [ContextEcho(**e) for e in raw]
             except Exception as exc_ce:
                 log.debug("Context echoes no disponibles: %s", exc_ce)
 

@@ -194,7 +194,7 @@ def find_context_echoes(
     motion_bearing_deg: float,
     motion_speed_kmh: float,
     grid_deg: float = 0.3,
-    min_pixels: int = 30,
+    min_pixels: int = 10,
     max_clusters: int = 20,
 ) -> list[dict]:
     """Clusters de eco significativo para visualización de contexto en el mapa.
