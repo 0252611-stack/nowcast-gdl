@@ -175,10 +175,18 @@ export default function CellMap({
     ? [[radarBounds.south, radarBounds.west], [radarBounds.north, radarBounds.east]]
     : null
 
-  // Flechas de dirección: hasta 10 posiciones distribuidas en el campo
-  const hasMotion = contextEchoes.some(ce => ce.speed_kmh > 0)
-  const arrowPositions = (!compact && hasMotion)
-    ? selectArrowPositions(contextEchoes, 10, 25)
+  // Fallback de dirección: viento 700 hPa del primer nowcast con esa data
+  const windFallbackBearing = Object.values(nowcasts)
+    .find(n => n?.wind_echo_bearing_deg != null)?.wind_echo_bearing_deg ?? null
+
+  // Mostramos flechas si hay ecos Y tenemos alguna fuente de dirección
+  // (optical flow con velocidad > 1 km/h, o viento 700 hPa como fallback)
+  const hasDirection = contextEchoes.some(ce => ce.speed_kmh > 1) || windFallbackBearing != null
+  const arrowPositions = (!compact && contextEchoes.length > 0 && hasDirection)
+    ? selectArrowPositions(contextEchoes, 10, 25).map(ce => {
+        const useWind = ce.speed_kmh <= 1 && windFallbackBearing != null
+        return { ...ce, bearing_deg: useWind ? windFallbackBearing : ce.bearing_deg, _src: useWind ? "wind" : "flow" }
+      })
     : []
 
   const displayPoints = focusPoint
@@ -223,7 +231,10 @@ export default function CellMap({
       {arrowPositions.map((ce, i) => (
         <Marker key={`fa-${i}`} position={[ce.lat, ce.lon]} icon={fieldArrowIcon(ce.bearing_deg)}>
           <Tooltip>
-            Campo: {Math.round(ce.bearing_deg)}° · {ce.speed_kmh.toFixed(0)} km/h
+            {ce._src === "wind"
+              ? `Viento 700 hPa: ${Math.round(ce.bearing_deg)}°`
+              : `Campo: ${Math.round(ce.bearing_deg)}° · ${ce.speed_kmh.toFixed(0)} km/h`
+            }
           </Tooltip>
         </Marker>
       ))}
