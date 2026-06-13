@@ -16,7 +16,20 @@ DBZ_MAX = 78.0
 # width of the image. We sample row y=70 (middle of the color bar) to get
 # the color→dBZ mapping.
 _LEGEND_SAMPLE_ROW = 70
-_LEGEND_SAMPLE_COUNT = 200  # Number of equidistant samples across the bar
+_LEGEND_SAMPLE_COUNT = 200
+
+# The 16 tick-mark dBZ values from the IAM legend, left-to-right.
+# The tick marks are EVENLY spaced in pixel coordinates (~26.5 px apart in a
+# 399 px wide image), but the dBZ steps are NOT uniform: the first two
+# intervals span 21.5 and 23 dBZ respectively, then 5 dBZ steps for the rest.
+# Using a flat linear mapping produces errors up to 30 dBZ — piecewise
+# interpolation between these ticks gives the correct calibration.
+_TICK_DBZ = [
+    -31.5, -10.0,  # Ruido
+     13.0,  18.0,  23.0,  28.0,  33.0,  # Débil → Ligera
+     38.0,  43.0,  48.0,  53.0,  # Moderada a fuerte
+     58.0,  63.0,  68.0,  73.0,  78.0,  # Granizo
+]  # Number of equidistant samples across the bar
 
 
 def load_colormap(legend_path: str) -> dict[tuple[int, int, int], float]:
@@ -26,33 +39,36 @@ def load_colormap(legend_path: str) -> dict[tuple[int, int, int], float]:
     Rango dBZ: -31.5 (ruido) a 78.0 (granizo).
 
     Estrategia:
-    1. Abre la imagen de la leyenda.
+    1. Abre la imagen de la leyenda (399×93 px).
     2. Muestrea _LEGEND_SAMPLE_COUNT colores equidistantes a lo largo de la
-       fila central de la barra de color.
-    3. Asigna dBZ linealmente desde DBZ_MIN hasta DBZ_MAX.
+       fila y=70 (centro de la barra de color).
+    3. Asigna dBZ mediante interpolación PIECEWISE entre los 16 ticks de la
+       leyenda IAM. Los ticks están igualmente espaciados en píxeles (~26.5 px),
+       pero los valores dBZ NO son uniformes (primeros dos saltos: 21.5 y 23 dBZ;
+       el resto: 5 dBZ cada uno). Una asignación lineal simple introduce errores
+       de hasta 30 dBZ — este método es correcto.
     4. Devuelve el dict {(r,g,b): dbz}.
     """
     img = Image.open(legend_path).convert("RGBA")
     width, height = img.size
 
-    # Use the sampling row (clamped to image height)
     y = min(_LEGEND_SAMPLE_ROW, height - 1)
 
     colormap: dict[tuple[int, int, int], float] = {}
-
-    dbz_range = DBZ_MAX - DBZ_MIN
+    n_ticks = len(_TICK_DBZ)
 
     for i in range(_LEGEND_SAMPLE_COUNT):
-        # x goes from 0 to width-1 linearly
         x = int(round(i / (_LEGEND_SAMPLE_COUNT - 1) * (width - 1)))
         r, g, b, a = img.getpixel((x, y))
 
         if a < 128:
-            # Transparent pixel — skip
             continue
 
-        dbz = DBZ_MIN + (x / (width - 1)) * dbz_range
-        # Clamp to valid range
+        # Posición fraccional en el espacio de ticks [0, n_ticks-1]
+        t = (x / (width - 1)) * (n_ticks - 1)
+        idx = min(int(t), n_ticks - 2)
+        frac = t - idx
+        dbz = _TICK_DBZ[idx] + frac * (_TICK_DBZ[idx + 1] - _TICK_DBZ[idx])
         dbz = max(DBZ_MIN, min(DBZ_MAX, dbz))
 
         colormap[(r, g, b)] = dbz
