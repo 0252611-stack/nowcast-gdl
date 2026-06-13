@@ -317,8 +317,8 @@ def find_echo_contours(
     bounds: dict[str, float],
     min_dbz: float = 0.0,
     min_area_px: int = 10,
-    smooth_kernel: int = 5,
-    epsilon_px: float = 2.0,
+    smooth_kernel: int = 3,
+    epsilon_px: float = 0.5,
     max_contours: int = 40,
 ) -> list[list[list[float]]]:
     """Traza el contorno EXTERNO de cada eco (dBZ >= min_dbz) en la imagen del
