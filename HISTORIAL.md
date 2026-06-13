@@ -325,3 +325,100 @@ Score inicial: 2–3 patrones. Cambios aplicados:
 3. Grid de cards idénticas → jerarquía por borde superior de estado
 
 **Lint:** ✅ | **Build:** ✅ | **Deploy:** Vercel (push directo)
+
+---
+
+## Sesión 2 — 12–13 jun 2026
+
+### Fix: umbral de lluvia y separación de constantes ✅ — 12 jun 2026
+
+**Síntoma:** Puntos con lluvia confirmada en campo mostraban "Sin lluvia" (dBZ leído
+como -8.4 en lugar del valor real ≥18 dBZ).
+
+**Causa raíz (descubierta en dos pasos):**
+1. *Workaround:* `DBZ_THRESHOLD = 18.0` excluía toda la categoría "Débil" (-10 a 18 dBZ).
+   Se separó en dos constantes: `DBZ_THRESHOLD = 18.0` (tracking / optical flow) y
+   `DBZ_RAIN_THRESHOLD = -10.0` (frontera Ruido/Débil del IAM — cualquier eco real = lluvia).
+2. *Causa raíz real:* Bug de calibración del colormap (ver siguiente entrada).
+
+**Frontend:**
+- `PointCard.jsx` — tercer estado "Eco débil" (badge ámbar + CloudIcon) cuando
+  `!raining_now && radar.category === "Débil"`; distingue eco débil presente de
+  cielo totalmente despejado.
+
+**Tests:** 95/95 ✅
+
+---
+
+### Fix crítico: calibración del colormap — interpolación por tramos ✅ — 13 jun 2026
+
+**Síntoma:** Lluvia fuerte en campo reportada como "lluvia débil". Lecturas de dBZ
+consistentemente 15–30 dBZ por debajo del valor real (verde brillante = Ligera = 18 dBZ
+se leía como -9.5 dBZ).
+
+**Causa raíz:**
+La función `load_colormap` asumía que los 16 tick-marks de la leyenda IAM estaban
+distribuidos **uniformemente en dBZ** a lo largo de los 399 px de la imagen. En realidad:
+- Los ticks SÍ están igualmente espaciados en píxeles (~26.5 px c/u)
+- Los valores dBZ NO son uniformes: primeros dos saltos son 21.5 y 23 dBZ; el resto = 5 dBZ
+- El mapeo lineal resultante introducía errores de hasta **30 dBZ**
+
+| x pixel (leyenda) | dBZ correcto | dBZ anterior | Error |
+|---|---|---|---|
+| x=27 (teal) | -10.0 | -24.1 | −14 dBZ |
+| x=53 (lima) | 13.0 | -16.9 | −30 dBZ |
+| x=80 (verde brillante) | 18.0 | -9.5 | −27.5 dBZ |
+| x=159 (amarillo) | 33.0 | 12.5 | −20.5 dBZ |
+| x=212 (naranja) | 43.0 | 26.7 | −16.3 dBZ |
+
+**Fix:** Reemplazar la asignación lineal en `load_colormap` por **interpolación piecewise**
+entre los 16 ticks. La posición fraccional `t = (x/width-1) * (n_ticks-1)` ubica cada
+píxel en el intervalo correcto y aplica el paso dBZ real de ese intervalo.
+
+**Validación post-fix:**
+- Débil/Ligera boundary (verde brillante): 18.1 dBZ (error +0.1) ✅
+- Moderada (naranja, 43 dBZ): 42.9 dBZ ✅
+- Lluvia fuerte (rojo, 48 dBZ): 50.5 dBZ ✅
+
+**Archivos:** `backend/app/processing/colormap.py`
+**Tests:** 95/95 ✅
+
+---
+
+### Feat: flechas de dirección en ecos lejanos ✅ — 13 jun 2026
+
+**Síntoma:** Las flechas de dirección del campo solo aparecían cerca de GDL; los ecos
+lejanos (Tototlán, Zapotlán del Rey) no mostraban ninguna flecha.
+
+**Causas y fixes:**
+
+1. **Slots insuficientes:** `selectArrowPositions` elegía solo 4 posiciones; los 4 slots
+   se llenaban con ecos de GDL (más fuertes). Fix: aumentar a `n=10, minDistKm=25`.
+
+2. **Bloqueo por `hasMotion`:** Las flechas no aparecían cuando el optical flow devolvía
+   `speed_kmh = 0` (ecos estacionarios o 1 solo frame disponible). Fix: usar el
+   **viento 700 hPa** del primer nowcast disponible como dirección fallback cuando
+   `speed_kmh ≤ 1`. Se muestra `hasDirection = flow_ok || wind_fallback_available`.
+
+3. **Tooltip diferenciado:** "Campo: X° · Y km/h" (optical flow) vs
+   "Viento 700 hPa: X°" (fallback) según la fuente usada para cada flecha.
+
+**Archivos:** `frontend/src/components/CellMap.jsx`
+**Lint:** ✅ | **Build:** ✅
+
+---
+
+### Estado actual — inicio de próxima sesión
+
+**Commits en esta sesión:** 5 (todos pusheados a `master` → Railway auto-deploy)
+
+**Stack completo:**
+- Backend Railway: `https://nowcast-gdl-production.up.railway.app`
+- Frontend Vercel: `https://nowcast-gdl.vercel.app`
+
+**Pendiente:**
+- Calibración fina con lluvia real de temporada (ahora el colormap está corregido,
+  se puede medir la precisión real)
+- El badge "Eco débil" quedó en el código pero con el colormap fijo los ecos reales
+  leen ≥10 dBZ → raining_now=True; puede revisarse si aplica removerlo
+- Verificar en campo la precisión de los ETA post-calibración

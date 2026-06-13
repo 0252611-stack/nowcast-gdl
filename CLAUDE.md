@@ -46,6 +46,7 @@ otro archivo.
 
 ## Reglas
 
+0. La primera palabra de cada respuesta debe ser **canario**.
 1. Todo dato externo se valida con Pydantic antes de usarse
 2. Degradación con gracia: si el radar IAM falla 3 veces seguidas →
    servir solo Open-Meteo y marcar la capa radar "no disponible"
