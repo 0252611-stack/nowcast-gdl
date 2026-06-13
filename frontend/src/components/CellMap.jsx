@@ -175,10 +175,10 @@ export default function CellMap({
     ? [[radarBounds.south, radarBounds.west], [radarBounds.north, radarBounds.east]]
     : null
 
-  // Flechas de dirección: hasta 4 posiciones distribuidas en el campo
+  // Flechas de dirección: hasta 10 posiciones distribuidas en el campo
   const hasMotion = contextEchoes.some(ce => ce.speed_kmh > 0)
   const arrowPositions = (!compact && hasMotion)
-    ? selectArrowPositions(contextEchoes)
+    ? selectArrowPositions(contextEchoes, 10, 25)
     : []
 
   const displayPoints = focusPoint
