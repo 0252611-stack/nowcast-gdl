@@ -316,24 +316,27 @@ def find_echo_contours(
     image: Image.Image,
     bounds: dict[str, float],
     min_dbz: float = 0.0,
-    min_area_px: int = 10,
+    min_area_px: int = 4,
     smooth_kernel: int = 3,
-    epsilon_px: float = 0.5,
-    max_contours: int = 40,
+    epsilon_px: float = 0.3,
+    max_contours: int = 60,
 ) -> list[list[list[float]]]:
     """Traza el contorno EXTERNO de cada eco (dBZ >= min_dbz) en la imagen del
     radar y devuelve una lista de polígonos en coordenadas geográficas.
 
     Cada polígono es una lista de puntos [lat, lon] lista para pasar a Leaflet
-    Polygon. Se aplica MORPH_CLOSE para rellenar huecos menores al kernel, luego
-    se procesa cada componente conectado por separado con findContours.
+    Polygon.
 
-    min_dbz: umbral mínimo de dBZ para incluir el píxel en la máscara (0.0 =
-             todo eco detectable, excluye solo el fondo transparente).
-    min_area_px: descartar contornos con área de polígono < N px² (elimina ruido).
-    smooth_kernel: tamaño del kernel de MORPH_CLOSE (rellena huecos pequeños).
-    epsilon_px: tolerancia de simplificación Douglas-Peucker en píxeles.
-    max_contours: límite máximo de contornos devueltos (los N con mayor área).
+    Pipeline morfológico:
+    1. MORPH_CLOSE (k=smooth_kernel): rellena huecos pequeños dentro del eco.
+    2. MORPH_DILATE (k=3, 1 iter): engrosa todos los ecos 1 px para que incluso
+       píxeles aislados formen un área de polígono detectable (sin dilate, los
+       componentes de 1-3 px tienen contourArea=0 y se filtran).
+
+    min_dbz: umbral mínimo de dBZ (0.0 = todo eco detectable).
+    min_area_px: descarta contornos con área < N px² tras la dilatación.
+    epsilon_px: tolerancia Douglas-Peucker (0.3 = alta precisión, pocos vértices eliminados).
+    max_contours: límite de contornos devueltos (los N con mayor área).
     """
     from app.processing.colormap import DBZ_MIN
 
@@ -361,15 +364,18 @@ def find_echo_contours(
     dbz_grid[ys, xs] = dbzs
     mask = ((dbz_grid >= min_dbz) & (alpha > 0)).astype(np.uint8) * 255
 
-    # MORPH_CLOSE: rellena huecos < kernel para suavizar bordes irregulares.
-    # No se aplica MORPH_OPEN porque los ecos del radar son píxeles dispersos
-    # que se erosionarían completamente.
+    # 1. MORPH_CLOSE: rellena huecos menores al kernel dentro de cada eco
     k = np.ones((smooth_kernel, smooth_kernel), np.uint8)
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k)
 
+    # 2. MORPH_DILATE: engrosa 1 px para que ecos de 1-3 px sean detectables.
+    #    Ecos aislados pasan de área=0 (invisible) a ≥9 px² (contornable).
+    k3 = np.ones((3, 3), np.uint8)
+    mask = cv2.dilate(mask, k3, iterations=1)
+
     # Procesar cada componente conectado por separado: findContours sobre toda
     # la máscara devuelve un único contorno envolvente cuando los componentes
-    # son muy dispersos (el background conecta todos los "huecos").
+    # son dispersos (el background rodea todos los huecos).
     n_labels, labels = cv2.connectedComponents(mask)
 
     north = bounds["north"]
@@ -383,7 +389,6 @@ def find_echo_contours(
         contours_c, _ = cv2.findContours(comp_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         if not contours_c:
             continue
-        # Tomar el contorno más grande del componente
         c = max(contours_c, key=cv2.contourArea)
         area = cv2.contourArea(c)
         if area < min_area_px:
