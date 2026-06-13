@@ -12,6 +12,7 @@ export default function MapView() {
   const [points, setPoints] = useState([])
   const [nowcasts, setNowcasts] = useState({})
   const [rainviewerUrl, setRainviewerUrl] = useState(null)
+  const [contextEchoes, setContextEchoes] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
 
@@ -32,6 +33,17 @@ export default function MapView() {
         })
         setNowcasts(nw)
         setRainviewerUrl(rvUrl)
+
+        // Deduplicar ecos de contexto de todas las respuestas (son iguales entre puntos)
+        const allEchoes = results.flatMap(r => r.context_echoes ?? [])
+        const seen = new Set()
+        const deduped = allEchoes.filter(ce => {
+          const key = `${Math.round(ce.lat * 10)}_${Math.round(ce.lon * 10)}`
+          if (seen.has(key)) return false
+          seen.add(key)
+          return true
+        })
+        setContextEchoes(deduped)
       } catch (e) {
         if (!cancelled) setError(e.message)
       } finally {
@@ -66,6 +78,7 @@ export default function MapView() {
               nowcasts={nowcasts}
               rainviewerUrl={rainviewerUrl}
               height="calc(100vh - 220px)"
+              contextEchoes={contextEchoes}
             />
           </div>
 
@@ -81,6 +94,9 @@ export default function MapView() {
               <span style={{ ...st.dot, background: theme.orange }} /> Eco causante
             </span>
             <span style={st.legendItem}>
+              <span style={{ ...st.dot, background: "#94A3B8" }} /> Eco de contexto
+            </span>
+            <span style={st.legendItem}>
               <svg width="14" height="14" viewBox="0 0 14 14" style={{ flexShrink: 0 }}>
                 <polygon points="7,1 12,12 7,9 2,12" fill={theme.orange} stroke="#fff" strokeWidth="0.8"/>
               </svg>
@@ -90,10 +106,15 @@ export default function MapView() {
               <svg width="14" height="14" viewBox="0 0 14 14" style={{ flexShrink: 0 }}>
                 <polygon points="7,1 12,12 7,9 2,12" fill="none" stroke={theme.primary} strokeWidth="1.5"/>
               </svg>
-              Viento 700 hPa en el eco
+              Viento 700 hPa
             </span>
             <span style={st.legendItem}>
-              <span style={{ color: theme.textFaint, fontSize: "11px" }}>— Trayectoria</span>
+              <span style={{ display: "inline-block", width: "20px", height: "3px", background: theme.green, verticalAlign: "middle", marginRight: "2px" }} />
+              Trayectoria consistente
+            </span>
+            <span style={st.legendItem}>
+              <span style={{ display: "inline-block", width: "20px", height: "3px", background: theme.orange, verticalAlign: "middle", marginRight: "2px" }} />
+              Trayectoria incierta
             </span>
           </div>
         </>

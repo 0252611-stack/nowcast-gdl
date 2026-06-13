@@ -20,6 +20,37 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 # --------------------------------------------------------------------------- #
+# Viento a lo largo de la trayectoria eco → punto
+# --------------------------------------------------------------------------- #
+
+class WindSample(BaseModel):
+    """Muestra de viento 700 hPa en un punto intermedio de la trayectoria."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    lat: float = Field(..., ge=-90, le=90)
+    lon: float = Field(..., ge=-180, le=180)
+    toward_deg: float = Field(..., ge=0, le=360, description="Hacia donde sopla (0=N, 90=E)")
+    speed_kmh: float = Field(..., ge=0)
+
+
+# --------------------------------------------------------------------------- #
+# Ecos de contexto (no causantes)
+# --------------------------------------------------------------------------- #
+
+class ContextEcho(BaseModel):
+    """Cluster de eco detectado en el radar pero no clasificado como causante."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    lat: float = Field(..., ge=-90, le=90)
+    lon: float = Field(..., ge=-180, le=180)
+    dbz: float
+    bearing_deg: float = Field(..., ge=0, le=360, description="Hacia donde se mueve el eco")
+    speed_kmh: float = Field(..., ge=0)
+
+
+# --------------------------------------------------------------------------- #
 # Open-Meteo: pronóstico por punto
 # --------------------------------------------------------------------------- #
 
@@ -113,6 +144,10 @@ class NowcastResult(BaseModel):
     )
     wind_echo_speed_kmh: float | None = Field(
         None, ge=0, description="Velocidad del viento 700 hPa en el eco (km/h)"
+    )
+    # Muestras de viento a lo largo de la trayectoria eco → punto
+    trajectory_wind: list[WindSample] | None = Field(
+        None, description="Viento 700 hPa en puntos intermedios entre el eco y el punto monitoreado"
     )
     generated_at: datetime
     method: str = Field(

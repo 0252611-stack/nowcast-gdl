@@ -15,7 +15,8 @@ from PIL import Image
 from app import config
 from app.nowcast.engine import estimate_arrival
 from app.processing.pixel_extract import reading_for_point
-from app.sources.openmeteo import fetch_all_points, fetch_forecast, fetch_wind_700_at
+from app.schemas import WindSample
+from app.sources.openmeteo import fetch_all_points, fetch_forecast, fetch_wind_700_at, sample_trajectory_wind
 from app.sources.radar_iam import RadarUnavailable, fetch_current_frame
 from app.storage import (
     get_latest_reading,
@@ -107,6 +108,13 @@ async def run_radar_loop(conn: sqlite3.Connection, state: RadarState) -> None:
                                 result.wind_echo_speed_kmh = ew["speed_kmh"]
                             except Exception as exc:
                                 log.debug("Viento en eco no disponible: %s", exc)
+                            try:
+                                traj = await sample_trajectory_wind(
+                                    fc, result.cell_lat, result.cell_lon, pt["lat"], pt["lon"]
+                                )
+                                result.trajectory_wind = [WindSample(**s) for s in traj]
+                            except Exception as exc:
+                                log.debug("Trajectory wind no disponible: %s", exc)
                         save_prediction(conn, result)
                     except Exception as exc:
                         log.warning("Error emitiendo predicción para %s: %s", pt["id"], exc)

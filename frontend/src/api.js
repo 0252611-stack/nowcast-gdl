@@ -41,10 +41,14 @@ export async function getForecast(pointId) {
  *   cell_bearing_deg: number|null, cell_lat: number|null, cell_lon: number|null,
  *   bearing_cell_to_point_deg: number|null,
  *   wind_echo_bearing_deg: number|null, wind_echo_speed_kmh: number|null,
+ *   trajectory_wind: Array<{lat: number, lon: number, toward_deg: number, speed_kmh: number}>|null,
  *   generated_at: string, method: string }} NowcastResult
  *
+ * @typedef {{ lat: number, lon: number, dbz: number, bearing_deg: number, speed_kmh: number }} ContextEcho
+ *
  * @param {string} pointId
- * @returns {Promise<{radar: object|null, radar_available: boolean, nowcast: NowcastResult|null, rainviewer_url: string|null}>}
+ * @returns {Promise<{radar: object|null, radar_available: boolean, nowcast: NowcastResult|null,
+ *   rainviewer_url: string|null, context_echoes: ContextEcho[]}>}
  */
 export async function getRadar(pointId) {
   return fetchJson(`/points/${pointId}/radar`);

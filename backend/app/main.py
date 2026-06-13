@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import logging
 import sqlite3
 import time
@@ -11,12 +12,15 @@ from contextlib import asynccontextmanager
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from PIL import Image
 from pydantic import BaseModel, Field
 
 from app import config
 from app.nowcast.engine import estimate_arrival
+from app.processing.motion import compute_cell_motion, find_context_echoes
 from app.scheduler import RadarState, run_forecast_loop, run_radar_loop
-from app.sources.openmeteo import fetch_forecast, fetch_wind_700_at
+from app.schemas import ContextEcho, WindSample
+from app.sources.openmeteo import fetch_forecast, fetch_wind_700_at, sample_trajectory_wind
 from app.sources.rainviewer import fetch_tile_url as fetch_rainviewer_url
 from app.storage import (
     add_point,
@@ -151,6 +155,8 @@ async def get_radar(point_id: str):
     reading = get_latest_reading(app.state.db, point_id)
     nowcast = None
     rainviewer_url = None
+    context_echoes: list[ContextEcho] = []
+
     async with httpx.AsyncClient(
         headers={"User-Agent": config.USER_AGENT}, timeout=10
     ) as client:
@@ -158,13 +164,44 @@ async def get_radar(point_id: str):
             frames = get_recent_frames(app.state.db, 2)
             forecast = await fetch_forecast(client, pt["id"], pt["name"], pt["lat"], pt["lon"])
             nowcast = estimate_arrival(point_id, reading, forecast, frames, state.last_bounds)
+
             if nowcast is not None and nowcast.cell_lat is not None:
+                # Viento 700 hPa en el eco
                 try:
                     ew = await fetch_wind_700_at(client, nowcast.cell_lat, nowcast.cell_lon)
                     nowcast.wind_echo_bearing_deg = ew["toward_deg"]
                     nowcast.wind_echo_speed_kmh = ew["speed_kmh"]
                 except Exception as exc_w:
                     log.debug("Viento en eco no disponible: %s", exc_w)
+
+                # Viento a lo largo de la trayectoria eco → punto
+                try:
+                    traj = await sample_trajectory_wind(
+                        client, nowcast.cell_lat, nowcast.cell_lon, pt["lat"], pt["lon"]
+                    )
+                    nowcast.trajectory_wind = [WindSample(**s) for s in traj]
+                except Exception as exc_t:
+                    log.debug("Trajectory wind no disponible: %s", exc_t)
+
+            # Ecos de contexto (campo completo, no solo upstream)
+            try:
+                if len(frames) >= 2 and state.last_bounds:
+                    newer_bytes, newer_time = frames[0]
+                    older_bytes, older_time = frames[1]
+                    interval_s = max(1.0, (newer_time - older_time).total_seconds())
+                    motion = compute_cell_motion(
+                        older_bytes, newer_bytes, interval_s, state.last_bounds
+                    )
+                    if motion["speed_kmh"] >= 0.1:
+                        img = Image.open(io.BytesIO(newer_bytes))
+                        raw = find_context_echoes(
+                            img, state.last_bounds,
+                            motion["bearing_deg"], motion["speed_kmh"],
+                        )
+                        context_echoes = [ContextEcho(**e) for e in raw]
+            except Exception as exc_ce:
+                log.debug("Context echoes no disponibles: %s", exc_ce)
+
         except Exception as exc:
             log.warning("Nowcast engine falló para %s: %s", point_id, exc)
 
@@ -180,6 +217,7 @@ async def get_radar(point_id: str):
         "radar_available": state.available,
         "nowcast": nowcast,
         "rainviewer_url": rainviewer_url,
+        "context_echoes": context_echoes,
     }
 
 

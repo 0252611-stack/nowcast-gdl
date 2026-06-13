@@ -183,3 +183,30 @@ async def fetch_wind_700_at(
     _wind_cache[key] = result
     logger.debug("Wind 700 hPa at (%.1f, %.1f): %.0f° %.1f km/h", lat, lon, result["toward_deg"], speed)
     return result
+
+
+async def sample_trajectory_wind(
+    client: httpx.AsyncClient,
+    echo_lat: float,
+    echo_lon: float,
+    point_lat: float,
+    point_lon: float,
+    n: int = 3,
+) -> list[dict]:
+    """Viento 700 hPa en N puntos equidistantes a lo largo de la trayectoria eco→punto.
+
+    Usa fetch_wind_700_at (caché por hora y 0.1° de resolución), por lo que el
+    costo extra de API es mínimo. Devuelve lista de {"lat", "lon", "toward_deg", "speed_kmh"}.
+    Si un punto falla, se omite silenciosamente.
+    """
+    samples = []
+    for i in range(1, n + 1):
+        t = i / (n + 1)
+        lat = echo_lat + t * (point_lat - echo_lat)
+        lon = echo_lon + t * (point_lon - echo_lon)
+        try:
+            wind = await fetch_wind_700_at(client, lat, lon)
+            samples.append({"lat": round(lat, 4), "lon": round(lon, 4), **wind})
+        except Exception:
+            pass
+    return samples

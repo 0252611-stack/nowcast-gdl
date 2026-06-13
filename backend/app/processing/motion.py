@@ -188,6 +188,88 @@ def nearest_upstream_echo(
     }
 
 
+def find_context_echoes(
+    image: Image.Image,
+    bounds: dict[str, float],
+    motion_bearing_deg: float,
+    motion_speed_kmh: float,
+    grid_deg: float = 0.3,
+    min_pixels: int = 30,
+    max_clusters: int = 20,
+) -> list[dict]:
+    """Clusters de eco significativo para visualización de contexto en el mapa.
+
+    Agrupa todos los píxeles con dBZ >= DBZ_THRESHOLD en una grilla de grid_deg°
+    y devuelve el centroide de cada celda con suficientes píxeles.
+    No filtra por dirección relativa a ningún punto — muestra todo el campo.
+
+    Devuelve: [{"lat", "lon", "dbz", "bearing_deg", "speed_kmh"}, ...]
+    """
+    arr = np.array(image.convert("RGBA"))
+    H, W = arr.shape[:2]
+    alpha = arr[:, :, 3]
+
+    ys, xs = np.where(alpha > 0)
+    if len(xs) == 0:
+        return []
+
+    if len(xs) > _MAX_ECHO_SAMPLE:
+        idx = np.random.choice(len(xs), _MAX_ECHO_SAMPLE, replace=False)
+        ys = ys[idx]
+        xs = xs[idx]
+
+    north, south, east, west = bounds["north"], bounds["south"], bounds["east"], bounds["west"]
+    lons = west + (xs / W) * (east - west)
+    lats = north - (ys / H) * (north - south)
+
+    cmap = _get_colormap()
+    cmap_colors = np.array(list(cmap.keys()), dtype=np.float32)
+    cmap_dbzs = np.array(list(cmap.values()), dtype=np.float32)
+    rgb = arr[ys, xs, :3].astype(np.float32)
+    diffs = rgb[:, np.newaxis, :] - cmap_colors[np.newaxis, :, :]
+    dists_sq = (diffs ** 2).sum(axis=2)
+    best_idx = dists_sq.argmin(axis=1)
+    dbzs = cmap_dbzs[best_idx]
+
+    strong = dbzs >= config.DBZ_THRESHOLD
+    lats = lats[strong]
+    lons = lons[strong]
+    dbzs = dbzs[strong]
+
+    if len(lats) == 0:
+        return []
+
+    # Bin into regular grid
+    lat_bins = (np.floor(lats / grid_deg) * grid_deg).round(6)
+    lon_bins = (np.floor(lons / grid_deg) * grid_deg).round(6)
+    keys = list(zip(lat_bins.tolist(), lon_bins.tolist()))
+
+    clusters: dict[tuple, dict] = {}
+    for i, key in enumerate(keys):
+        if key not in clusters:
+            clusters[key] = {"sum_lat": 0.0, "sum_lon": 0.0, "sum_dbz": 0.0, "n": 0}
+        c = clusters[key]
+        c["sum_lat"] += float(lats[i])
+        c["sum_lon"] += float(lons[i])
+        c["sum_dbz"] += float(dbzs[i])
+        c["n"] += 1
+
+    result = []
+    for c in clusters.values():
+        if c["n"] < min_pixels:
+            continue
+        result.append({
+            "lat": round(c["sum_lat"] / c["n"], 5),
+            "lon": round(c["sum_lon"] / c["n"], 5),
+            "dbz": round(c["sum_dbz"] / c["n"], 1),
+            "bearing_deg": motion_bearing_deg,
+            "speed_kmh": motion_speed_kmh,
+        })
+
+    result.sort(key=lambda x: x["dbz"], reverse=True)
+    return result[:max_clusters]
+
+
 def project_cell(
     point_lat: float,
     point_lon: float,
