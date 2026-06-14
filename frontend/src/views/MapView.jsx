@@ -9,10 +9,11 @@ import { theme } from "../theme.js"
 import { API_BASE } from "../config.js"
 
 const LAYERS = [
-  { key: "showRadar",    label: "Radar",     title: "Mostrar/ocultar la imagen del radar IAM como fondo" },
-  { key: "showContours", label: "Contornos", title: "Mostrar/ocultar los contornos de los ecos de lluvia" },
-  { key: "showArrows",   label: "Flechas",   title: "Mostrar/ocultar las flechas de dirección del campo óptico" },
-  { key: "showPoints",   label: "Puntos",    title: "Mostrar/ocultar los puntos monitoreados y sus ecos causantes" },
+  { key: "showRadar",        label: "Radar",     title: "Mostrar/ocultar la imagen del radar IAM como fondo" },
+  { key: "showContours",     label: "Contornos", title: "Mostrar/ocultar los contornos de los ecos de lluvia" },
+  { key: "showArrows",       label: "Flechas",   title: "Mostrar/ocultar las flechas de dirección del campo óptico" },
+  { key: "showFieldVectors", label: "Vectores",  title: "Mostrar/ocultar las flechas del campo de movimiento interior de cada eco" },
+  { key: "showPoints",       label: "Puntos",    title: "Mostrar/ocultar los puntos monitoreados y sus ecos causantes" },
 ]
 
 export default function MapView() {
@@ -24,7 +25,7 @@ export default function MapView() {
   const [radarBounds, setRadarBounds] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
-  const [layers, setLayers] = useState({ showRadar: true, showContours: true, showArrows: true, showPoints: true })
+  const [layers, setLayers] = useState({ showRadar: true, showContours: true, showArrows: true, showFieldVectors: false, showPoints: true })
 
   function toggleLayer(key) {
     setLayers(prev => ({ ...prev, [key]: !prev[key] }))
@@ -121,6 +122,7 @@ export default function MapView() {
               showRadar={layers.showRadar}
               showContours={layers.showContours}
               showArrows={layers.showArrows}
+              showFieldVectors={layers.showFieldVectors}
               showPoints={layers.showPoints}
             />
           </div>
@@ -142,6 +144,19 @@ export default function MapView() {
                 <polygon points="7,1 12,12 7,9 2,12" fill={theme.orange} stroke="#fff" strokeWidth="0.8"/>
               </svg>
               Dirección del campo (radar)
+            </span>
+            <span style={st.legendItem}>
+              <svg width="14" height="14" viewBox="0 0 14 14" style={{ flexShrink: 0 }}>
+                <polygon points="7,1 11,12 7,9.5 3,12" fill="#16A34A" stroke="#fff" strokeWidth="0.8"/>
+              </svg>
+              Vectores del campo interior (≥30 / 10–29 /
+              <svg width="14" height="14" viewBox="0 0 14 14" style={{ flexShrink: 0, marginLeft: "2px" }}>
+                <polygon points="7,1 11,12 7,9.5 3,12" fill="#D97706" stroke="#fff" strokeWidth="0.8"/>
+              </svg>
+              <svg width="14" height="14" viewBox="0 0 14 14" style={{ flexShrink: 0 }}>
+                <polygon points="7,1 11,12 7,9.5 3,12" fill="#64748B" stroke="#fff" strokeWidth="0.8"/>
+              </svg>
+              km/h)
             </span>
             <span style={st.legendItem}>
               <svg width="14" height="14" viewBox="0 0 14 14" style={{ flexShrink: 0 }}>

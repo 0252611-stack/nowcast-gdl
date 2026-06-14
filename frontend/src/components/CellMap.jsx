@@ -331,11 +331,12 @@ export default function CellMap({
   radarImageUrl = null,
   radarBounds   = null,
   trajectories  = [],   // polilíneas de trayectoria de eco [[lat,lon],…]
-  showRadar     = true,
-  showContours  = true,
-  showArrows    = true,
-  showPoints    = true,
-  showMesh      = false,  // muestra los puntos exactos muestreados por el backend (modo diagnóstico)
+  showRadar        = true,
+  showContours     = true,
+  showArrows       = true,
+  showPoints       = true,
+  showMesh         = false,  // cuadrantes CAD + flechas (modo diagnóstico /malla)
+  showFieldVectors = false,  // solo flechas del campo interior, sin rectángulos (toggle en /mapa)
 }) {
   const center = focusPoint
     ? [focusPoint.lat, focusPoint.lon]
@@ -473,6 +474,24 @@ export default function CellMap({
                     />
                   )}
                 </Fragment>
+              )
+            })}
+
+            {/* Vectores del campo interior — flechas sin rectángulos (toggle /mapa) */}
+            {showFieldVectors && !showMesh && computeMeshCells(ring, vectors).map(({ centerLat, centerLon, vec }, j) => {
+              if (!vec) return null
+              return (
+                <Marker
+                  key={`fv-${i}-${j}`}
+                  position={[centerLat, centerLon]}
+                  icon={meshCellArrowIcon(vec.bearing_deg, vec.speed_kmh)}
+                >
+                  <Tooltip>
+                    <span style={{ fontSize: "11px" }}>
+                      {Math.round(vec.bearing_deg)}° · {vec.speed_kmh.toFixed(0)} km/h
+                    </span>
+                  </Tooltip>
+                </Marker>
               )
             })}
 
