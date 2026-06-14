@@ -13,6 +13,12 @@ POINTS: list[dict] = [
     {"id": "club_atlas",   "name": "Club Atlas Colomos",       "lat": 20.7143976, "lon": -103.4025069},
 ]
 
+# --- Sitio del radar IAM (fuente: <lookAt> del doc.kml — constante en todos los frames) ---
+# Radar Doppler IAM-CUCEI, Av. Vallarta 2602, Guadalajara, Jalisco.
+# Centro geométrico del área de cobertura = posición de la antena.
+RADAR_SITE_LAT: float = 20.67555618286133
+RADAR_SITE_LON: float = -103.3858337402344
+
 # --- Constantes del radar IAM ---
 USER_AGENT = "NowcastGDL/0.1 (proyecto academico)"
 POLL_INTERVAL_SECONDS = 90

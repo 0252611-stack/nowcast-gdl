@@ -15,6 +15,7 @@ from app.schemas import HourlyForecast, PointForecast
 logger = logging.getLogger(__name__)
 
 _BASE_URL = "https://api.open-meteo.com/v1/forecast"
+_ENSEMBLE_URL = "https://ensemble-api.open-meteo.com/v1/ensemble"
 _HOURLY_VARS = (
     "precipitation,"
     "precipitation_probability,"
@@ -31,8 +32,14 @@ _MAX_HOURS = 12
 # hour_bucket is an ISO string truncated to the hour, e.g. "2026-06-10T14"
 _cache: dict[tuple[str, str], PointForecast] = {}
 
-# Cache para viento en coordenadas arbitrarias: key = (lat_1dec, lon_1dec, hour_bucket)
+# Cache para viento en coordenadas arbitrarias: key = (lat_1dec, lon_1dec, level, hour_bucket)
 _wind_cache: dict[tuple, dict] = {}
+
+# Cache para precipitación en coordenadas arbitrarias: key = (lat_1dec, lon_1dec, hour_bucket)
+_precip_cache: dict[tuple, float] = {}
+
+# Cache para ensemble por punto: key = (lat_1dec, lon_1dec, hour_bucket)
+_ensemble_cache: dict[tuple, float] = {}
 
 
 def _hour_bucket() -> str:
@@ -153,48 +160,65 @@ async def fetch_all_points(
     return list(await asyncio.gather(*(_fetch_or_cache(p) for p in points)))
 
 
+_VALID_LEVELS = {850, 700, 500}
+
+
+async def fetch_wind_at(
+    client: httpx.AsyncClient,
+    lat: float,
+    lon: float,
+    level: int = 700,
+) -> dict:
+    """Viento de capa `level` hPa (850/700/500) en coordenadas arbitrarias.
+
+    Caché por (lat 0.1°, lon 0.1°, level, hora UTC).
+    Devuelve {"toward_deg": float, "speed_kmh": float} donde toward_deg
+    es la dirección HACIA la que sopla (convención "hacia", 0=N, 90=E).
+    """
+    if level not in _VALID_LEVELS:
+        level = 700
+    key = (round(lat, 1), round(lon, 1), level, _hour_bucket())
+    if key in _wind_cache:
+        return _wind_cache[key]
+
+    speed_var = f"wind_speed_{level}hPa"
+    dir_var   = f"wind_direction_{level}hPa"
+    params = {
+        "latitude": lat,
+        "longitude": lon,
+        "hourly": f"{speed_var},{dir_var}",
+        "timezone": "America/Mexico_City",
+        "forecast_hours": 1,
+    }
+    data = await _get_with_retry(client, _BASE_URL, params)
+    speed = float(data["hourly"][speed_var][0])
+    direction = float(data["hourly"][dir_var][0])
+    result = {"toward_deg": (direction + 180) % 360, "speed_kmh": speed}
+    _wind_cache[key] = result
+    logger.debug("Wind %d hPa at (%.1f, %.1f): %.0f° %.1f km/h", level, lat, lon, result["toward_deg"], speed)
+    return result
+
+
 async def fetch_wind_700_at(
     client: httpx.AsyncClient,
     lat: float,
     lon: float,
 ) -> dict:
-    """Viento 700 hPa (~3 000 m) en coordenadas arbitrarias.
-
-    Caché por (lat redondeada 0.1°, lon redondeada 0.1°, hora UTC).
-    Devuelve {"toward_deg": float, "speed_kmh": float} donde toward_deg
-    es la dirección HACIA la que sopla (convención "hacia", 0=N, 90=E),
-    es decir (wind_direction_700hPa + 180) % 360.
-    """
-    key = (round(lat, 1), round(lon, 1), _hour_bucket())
-    if key in _wind_cache:
-        return _wind_cache[key]
-
-    params = {
-        "latitude": lat,
-        "longitude": lon,
-        "hourly": "wind_speed_700hPa,wind_direction_700hPa",
-        "timezone": "America/Mexico_City",
-        "forecast_hours": 1,
-    }
-    data = await _get_with_retry(client, _BASE_URL, params)
-    speed = float(data["hourly"]["wind_speed_700hPa"][0])
-    direction = float(data["hourly"]["wind_direction_700hPa"][0])
-    result = {"toward_deg": (direction + 180) % 360, "speed_kmh": speed}
-    _wind_cache[key] = result
-    logger.debug("Wind 700 hPa at (%.1f, %.1f): %.0f° %.1f km/h", lat, lon, result["toward_deg"], speed)
-    return result
+    """Compatibilidad: fetch_wind_at con level=700."""
+    return await fetch_wind_at(client, lat, lon, level=700)
 
 
 async def sample_wind_grid(
     client: httpx.AsyncClient,
     bounds: dict[str, float],
-    nx: int = 4,
-    ny: int = 4,
+    nx: int = 6,
+    ny: int = 6,
+    level: int = 700,
 ) -> list[dict]:
-    """Viento 700 hPa en una malla nx×ny sobre el área del radar.
+    """Viento de capa `level` hPa en una malla nx×ny sobre el área del radar.
 
-    Reutiliza fetch_wind_700_at (cacheada por hora y 0.1°) — el costo extra
-    de API es mínimo (≤16 llamadas/hora de uso activo; dentro de <200/día).
+    Malla por defecto 6×6 (antes 4×4) para interpolación IDW más precisa.
+    Reutiliza fetch_wind_at (cacheada por hora, 0.1° y nivel).
     Devuelve lista de {"lat", "lon", "toward_deg", "speed_kmh"}.
     """
     north, south, east, west = bounds["north"], bounds["south"], bounds["east"], bounds["west"]
@@ -207,7 +231,7 @@ async def sample_wind_grid(
         for i in range(nx)
     ]
 
-    tasks = [fetch_wind_700_at(client, lat, lon) for lat, lon in coords]
+    tasks = [fetch_wind_at(client, lat, lon, level=level) for lat, lon in coords]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
     grid = []
@@ -219,6 +243,130 @@ async def sample_wind_grid(
     return grid
 
 
+async def sample_precip_grid(
+    client: httpx.AsyncClient,
+    bounds: dict[str, float],
+    nx: int = 6,
+    ny: int = 6,
+) -> list[dict]:
+    """Precipitación (mm/h) en una malla nx×ny sobre el área del radar.
+
+    Usa el endpoint horario de Open-Meteo para la hora actual.
+    Caché por (lat 0.1°, lon 0.1°, hora UTC) — sin requests redundantes.
+    Devuelve lista de {"lat", "lon", "precip_mm"}.
+    """
+    north, south, east, west = bounds["north"], bounds["south"], bounds["east"], bounds["west"]
+    lat_step = (north - south) / ny
+    lon_step = (east - west) / nx
+
+    coords = [
+        (south + (j + 0.5) * lat_step, west + (i + 0.5) * lon_step)
+        for j in range(ny)
+        for i in range(nx)
+    ]
+
+    bucket = _hour_bucket()
+
+    async def _fetch_one(lat: float, lon: float) -> dict | None:
+        key = (round(lat, 1), round(lon, 1), bucket)
+        if key in _precip_cache:
+            return {"lat": round(lat, 4), "lon": round(lon, 4), "precip_mm": _precip_cache[key]}
+        try:
+            params = {
+                "latitude": lat,
+                "longitude": lon,
+                "hourly": "precipitation",
+                "timezone": "America/Mexico_City",
+                "forecast_hours": 1,
+            }
+            data = await _get_with_retry(client, _BASE_URL, params)
+            precip = float(data["hourly"]["precipitation"][0])
+            _precip_cache[key] = precip
+            return {"lat": round(lat, 4), "lon": round(lon, 4), "precip_mm": precip}
+        except Exception as e:
+            logger.debug("Precip grid error at (%.2f, %.2f): %s", lat, lon, e)
+            return None
+
+    results = await asyncio.gather(*[_fetch_one(lat, lon) for lat, lon in coords])
+    return [r for r in results if r is not None]
+
+
+async def fetch_minutely_15(
+    client: httpx.AsyncClient,
+    lat: float,
+    lon: float,
+    n_steps: int = 8,
+) -> list[dict]:
+    """Precipitación cada 15 min en los próximos `n_steps` pasos (hasta 2 h).
+
+    Devuelve lista de {"minutes_ahead": int, "precip_mm": float}.
+    Caché implícita: misma llamada por hora (Open-Meteo regenera minutely_15
+    solo 4×/h; pedir más seguido devuelve los mismos datos).
+    """
+    params = {
+        "latitude": lat,
+        "longitude": lon,
+        "minutely_15": "precipitation",
+        "timezone": "America/Mexico_City",
+        "forecast_minutely_15": n_steps,
+    }
+    try:
+        data = await _get_with_retry(client, _BASE_URL, params)
+        precips = data.get("minutely_15", {}).get("precipitation", [])
+        return [
+            {"minutes_ahead": (i + 1) * 15, "precip_mm": float(v)}
+            for i, v in enumerate(precips[:n_steps])
+            if v is not None
+        ]
+    except Exception as e:
+        logger.debug("minutely_15 no disponible: %s", e)
+        return []
+
+
+async def fetch_ensemble(
+    client: httpx.AsyncClient,
+    lat: float,
+    lon: float,
+) -> float | None:
+    """Probabilidad de precipitación derivada del spread del ensemble.
+
+    Usa el endpoint ensemble-api.open-meteo.com. Deriva la probabilidad como
+    la fracción de miembros con precipitación > 0.1 mm en la hora actual.
+    Caché por (lat 0.1°, lon 0.1°, hora UTC). Devuelve None si falla.
+    """
+    key = (round(lat, 1), round(lon, 1), _hour_bucket())
+    if key in _ensemble_cache:
+        return _ensemble_cache[key]
+
+    params = {
+        "latitude": lat,
+        "longitude": lon,
+        "hourly": "precipitation",
+        "timezone": "America/Mexico_City",
+        "forecast_hours": 1,
+        "models": "icon_seamless",   # ensemble con múltiples miembros disponibles
+    }
+    try:
+        data = await _get_with_retry(client, _ENSEMBLE_URL, params)
+        hourly = data.get("hourly", {})
+        # Los miembros se devuelven como "precipitation_member01", "precipitation_member02", etc.
+        # También puede devolver "precipitation" si el modelo es determinista — fallback.
+        member_keys = [k for k in hourly if k.startswith("precipitation")]
+        if not member_keys:
+            return None
+        values = [hourly[k][0] for k in member_keys if hourly[k]]
+        if not values:
+            return None
+        prob = sum(1 for v in values if v is not None and float(v) > 0.1) / len(values)
+        result = round(prob, 3)
+        _ensemble_cache[key] = result
+        logger.debug("Ensemble prob at (%.1f, %.1f): %.2f (%d members)", lat, lon, result, len(values))
+        return result
+    except Exception as e:
+        logger.debug("Ensemble no disponible: %s", e)
+        return None
+
+
 async def sample_trajectory_wind(
     client: httpx.AsyncClient,
     echo_lat: float,
@@ -226,12 +374,12 @@ async def sample_trajectory_wind(
     point_lat: float,
     point_lon: float,
     n: int = 3,
+    level: int = 700,
 ) -> list[dict]:
-    """Viento 700 hPa en N puntos equidistantes a lo largo de la trayectoria eco→punto.
+    """Viento de capa `level` hPa en N puntos equidistantes eco→punto.
 
-    Usa fetch_wind_700_at (caché por hora y 0.1° de resolución), por lo que el
-    costo extra de API es mínimo. Devuelve lista de {"lat", "lon", "toward_deg", "speed_kmh"}.
-    Si un punto falla, se omite silenciosamente.
+    Usa fetch_wind_at (caché por hora, 0.1° y nivel). Devuelve lista de
+    {"lat", "lon", "toward_deg", "speed_kmh"}. Omite fallos silenciosamente.
     """
     samples = []
     for i in range(1, n + 1):
@@ -239,7 +387,7 @@ async def sample_trajectory_wind(
         lat = echo_lat + t * (point_lat - echo_lat)
         lon = echo_lon + t * (point_lon - echo_lon)
         try:
-            wind = await fetch_wind_700_at(client, lat, lon)
+            wind = await fetch_wind_at(client, lat, lon, level=level)
             samples.append({"lat": round(lat, 4), "lon": round(lon, 4), **wind})
         except Exception:
             pass
