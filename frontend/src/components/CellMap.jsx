@@ -206,30 +206,45 @@ function meshCellArrowIcon(bearing, speed) {
 }
 
 /**
- * Genera las celdas de la malla replicando la misma grilla adaptativa que usa el backend
- * (n_side = max(3, min(8, ceil(span/0.1)+2))). Devuelve celdas con sus bounds y el
- * vector más cercano del campo (null si no hay datos de movimiento aún).
+ * Genera celdas de malla tipo CAD con tamaño uniforme (~2.2 km por celda en GDL).
+ * Usa celda de tamaño fijo en grados en lugar de n_side adaptativo, para que el mesh
+ * tenga resolución consistente independientemente del tamaño del eco.
+ * Compensa la diferencia lat/lon: a 20.7°N, 1°lon ≈ 0.935 * 1°lat.
+ * Cota de rendimiento: máximo 900 celdas por contorno.
  */
 function computeMeshCells(ring, vectors) {
   const lats = ring.map(p => p[0])
   const lons = ring.map(p => p[1])
   const minLat = Math.min(...lats), maxLat = Math.max(...lats)
   const minLon = Math.min(...lons), maxLon = Math.max(...lons)
-  const span = Math.max(maxLat - minLat, maxLon - minLon)
-  const nSide = Math.max(3, Math.min(8, Math.ceil(span / 0.1) + 2))
-  const stepLat = maxLat > minLat ? (maxLat - minLat) / nSide : span / nSide
-  const stepLon = maxLon > minLon ? (maxLon - minLon) / nSide : span / nSide
+  const centerLat = (minLat + maxLat) / 2
+
+  // Tamaño de celda fijo en km → grados
+  const CELL_KM  = 2.2
+  const stepLat  = CELL_KM / 111.32
+  const stepLon  = CELL_KM / (111.32 * Math.cos(centerLat * Math.PI / 180))
+
+  const nLat = Math.max(3, Math.ceil((maxLat - minLat) / stepLat))
+  const nLon = Math.max(3, Math.ceil((maxLon - minLon) / stepLon))
+
+  // Si la cota de celdas se supera, escalar el paso uniformemente
+  const MAX_CELLS = 900
+  const scale = nLat * nLon > MAX_CELLS ? Math.sqrt((nLat * nLon) / MAX_CELLS) : 1
+  const sLat = stepLat * scale
+  const sLon = stepLon * scale
+  const nL   = Math.ceil((maxLat - minLat) / sLat)
+  const nC   = Math.ceil((maxLon - minLon) / sLon)
 
   const cells = []
-  for (let i = 0; i < nSide; i++) {
-    for (let j = 0; j < nSide; j++) {
-      const lat = minLat + (i + 0.5) * stepLat
-      const lon = minLon + (j + 0.5) * stepLon
+  for (let i = 0; i < nL; i++) {
+    for (let j = 0; j < nC; j++) {
+      const lat = minLat + (i + 0.5) * sLat
+      const lon = minLon + (j + 0.5) * sLon
       if (!pointInPolygon([lat, lon], ring)) continue
       cells.push({
         bounds: [
-          [minLat + i * stepLat,       minLon + j * stepLon],
-          [minLat + (i + 1) * stepLat, minLon + (j + 1) * stepLon],
+          [minLat + i * sLat,       minLon + j * sLon],
+          [minLat + (i + 1) * sLat, minLon + (j + 1) * sLon],
         ],
         centerLat: lat,
         centerLon: lon,
