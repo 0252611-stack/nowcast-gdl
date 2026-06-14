@@ -206,6 +206,14 @@ function meshVectorIcon(bearing, speed) {
   return L.divIcon({ className: "", html: svg, iconSize: [20, 20], iconAnchor: [10, 10] })
 }
 
+/** Punto gris — posición candidata de muestreo sin datos de movimiento aún. */
+function meshCandidateIcon() {
+  const svg = `<svg width="10" height="10" viewBox="0 0 10 10" xmlns="http://www.w3.org/2000/svg">
+    <circle cx="5" cy="5" r="3" fill="#9CA3AF" opacity="0.55" stroke="#ffffff" stroke-width="0.8"/>
+  </svg>`
+  return L.divIcon({ className: "", html: svg, iconSize: [10, 10], iconAnchor: [5, 5] })
+}
+
 /** Flecha pequeña naranja — dirección de movimiento dentro del perímetro de un eco */
 function echoMotionArrowIcon(bearing) {
   const svg = `<svg width="14" height="14" viewBox="0 0 14 14" xmlns="http://www.w3.org/2000/svg">
@@ -394,6 +402,16 @@ export default function CellMap({
                   <span style={{ fontSize: "11px" }}>
                     {Math.round(v.bearing_deg)}° · {v.speed_kmh.toFixed(0)} km/h
                   </span>
+                </Tooltip>
+              </Marker>
+            ))}
+
+            {/* Modo malla sin datos: muestra las posiciones candidatas como puntos grises
+                para que la grilla sea visible aunque el motor aún no tenga campo de movimiento */}
+            {showMesh && !hasVectors && echoArrowPositions(ring, echoArrowCount(ring)).map((pt, j) => (
+              <Marker key={`ec-${i}-${j}`} position={pt} icon={meshCandidateIcon()}>
+                <Tooltip>
+                  <span style={{ fontSize: "11px" }}>Sin datos de movimiento aún</span>
                 </Tooltip>
               </Marker>
             ))}
