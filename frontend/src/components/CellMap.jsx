@@ -15,7 +15,7 @@
 import { useEffect, Fragment } from "react"
 import {
   MapContainer, TileLayer, ImageOverlay,
-  Marker, Polygon, Polyline, Tooltip, useMap,
+  Marker, Polygon, Polyline, Rectangle, Tooltip, useMap,
 } from "react-leaflet"
 import L from "leaflet"
 import "leaflet/dist/leaflet.css"
@@ -192,26 +192,52 @@ function echoArrowPositions(ring, maxArrows = 15) {
 }
 
 /**
- * Marcador de punto muestreado por la malla — círculo + flecha coloreados por velocidad.
- * Verde ≥30 km/h (confiable), ámbar ≥10 km/h (moderado), gris < 10 km/h (débil).
+ * Flecha de celda de malla — misma paleta de velocidad que el relleno de la celda.
+ * Verde ≥30 km/h, ámbar ≥10, gris < 10 o sin datos.
  */
-function meshVectorIcon(bearing, speed) {
+function meshCellArrowIcon(bearing, speed) {
   const color = speed >= 30 ? "#16A34A" : speed >= 10 ? "#D97706" : "#6B7280"
-  const svg = `<svg width="20" height="20" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
-    <circle cx="10" cy="10" r="2.5" fill="${color}" opacity="0.85"/>
-    <g transform="rotate(${bearing},10,10)">
-      <polygon points="10,2 13,10 10,8 7,10" fill="${color}" stroke="#ffffff" stroke-width="0.8" stroke-linejoin="round"/>
+  const svg = `<svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">
+    <g transform="rotate(${bearing},8,8)">
+      <polygon points="8,1 12,13 8,10 4,13" fill="${color}" stroke="#ffffff" stroke-width="1" stroke-linejoin="round"/>
     </g>
   </svg>`
-  return L.divIcon({ className: "", html: svg, iconSize: [20, 20], iconAnchor: [10, 10] })
+  return L.divIcon({ className: "", html: svg, iconSize: [16, 16], iconAnchor: [8, 8] })
 }
 
-/** Punto gris — posición candidata de muestreo sin datos de movimiento aún. */
-function meshCandidateIcon() {
-  const svg = `<svg width="10" height="10" viewBox="0 0 10 10" xmlns="http://www.w3.org/2000/svg">
-    <circle cx="5" cy="5" r="3" fill="#9CA3AF" opacity="0.55" stroke="#ffffff" stroke-width="0.8"/>
-  </svg>`
-  return L.divIcon({ className: "", html: svg, iconSize: [10, 10], iconAnchor: [5, 5] })
+/**
+ * Genera las celdas de la malla replicando la misma grilla adaptativa que usa el backend
+ * (n_side = max(3, min(8, ceil(span/0.1)+2))). Devuelve celdas con sus bounds y el
+ * vector más cercano del campo (null si no hay datos de movimiento aún).
+ */
+function computeMeshCells(ring, vectors) {
+  const lats = ring.map(p => p[0])
+  const lons = ring.map(p => p[1])
+  const minLat = Math.min(...lats), maxLat = Math.max(...lats)
+  const minLon = Math.min(...lons), maxLon = Math.max(...lons)
+  const span = Math.max(maxLat - minLat, maxLon - minLon)
+  const nSide = Math.max(3, Math.min(8, Math.ceil(span / 0.1) + 2))
+  const stepLat = maxLat > minLat ? (maxLat - minLat) / nSide : span / nSide
+  const stepLon = maxLon > minLon ? (maxLon - minLon) / nSide : span / nSide
+
+  const cells = []
+  for (let i = 0; i < nSide; i++) {
+    for (let j = 0; j < nSide; j++) {
+      const lat = minLat + (i + 0.5) * stepLat
+      const lon = minLon + (j + 0.5) * stepLon
+      if (!pointInPolygon([lat, lon], ring)) continue
+      cells.push({
+        bounds: [
+          [minLat + i * stepLat,       minLon + j * stepLon],
+          [minLat + (i + 1) * stepLat, minLon + (j + 1) * stepLon],
+        ],
+        centerLat: lat,
+        centerLon: lon,
+        vec: nearestRingVector(lat, lon, vectors),
+      })
+    }
+  }
+  return cells
 }
 
 /** Flecha pequeña naranja — dirección de movimiento dentro del perímetro de un eco */
@@ -395,26 +421,45 @@ export default function CellMap({
               }}
             />
 
-            {/* Modo malla: posiciones exactas muestreadas por el backend */}
-            {showMesh && hasVectors && vectors.map((v, j) => (
-              <Marker key={`em-${i}-${j}`} position={[v.lat, v.lon]} icon={meshVectorIcon(v.bearing_deg, v.speed_kmh)}>
-                <Tooltip>
-                  <span style={{ fontSize: "11px" }}>
-                    {Math.round(v.bearing_deg)}° · {v.speed_kmh.toFixed(0)} km/h
-                  </span>
-                </Tooltip>
-              </Marker>
-            ))}
-
-            {/* Modo malla sin datos: muestra las posiciones candidatas como puntos grises
-                para que la grilla sea visible aunque el motor aún no tenga campo de movimiento */}
-            {showMesh && !hasVectors && echoArrowPositions(ring, echoArrowCount(ring)).map((pt, j) => (
-              <Marker key={`ec-${i}-${j}`} position={pt} icon={meshCandidateIcon()}>
-                <Tooltip>
-                  <span style={{ fontSize: "11px" }}>Sin datos de movimiento aún</span>
-                </Tooltip>
-              </Marker>
-            ))}
+            {/* Modo malla tipo CAD: cuadrantes rectangulares interiores al contorno.
+                Relleno coloreado por velocidad + flecha al centro de cada celda.
+                Siempre visible — gris sin datos, coloreado cuando hay campo de movimiento. */}
+            {showMesh && computeMeshCells(ring, vectors).map(({ bounds, centerLat, centerLon, vec }, j) => {
+              const speed   = vec?.speed_kmh ?? -1
+              const bearing = vec?.bearing_deg ?? 0
+              const color   = speed >= 30 ? "#16A34A" : speed >= 10 ? "#D97706" : "#64748B"
+              const hasVec  = vec !== null
+              return (
+                <Fragment key={`mc-${i}-${j}`}>
+                  <Rectangle
+                    bounds={bounds}
+                    pathOptions={{
+                      color,
+                      weight:       0.8,
+                      opacity:      0.7,
+                      fillColor:    color,
+                      fillOpacity:  hasVec ? 0.18 : 0.06,
+                      dashArray:    hasVec ? null : "2 3",
+                    }}
+                  >
+                    <Tooltip>
+                      <span style={{ fontSize: "11px" }}>
+                        {hasVec
+                          ? `${Math.round(bearing)}° · ${speed.toFixed(0)} km/h`
+                          : "Sin campo de movimiento aún"
+                        }
+                      </span>
+                    </Tooltip>
+                  </Rectangle>
+                  {hasVec && (
+                    <Marker
+                      position={[centerLat, centerLon]}
+                      icon={meshCellArrowIcon(bearing, speed)}
+                    />
+                  )}
+                </Fragment>
+              )
+            })}
 
             {/* Modo normal: grilla del frontend con interpolación al vector más cercano */}
             {!showMesh && arrowPts.map((pt, j) => {
