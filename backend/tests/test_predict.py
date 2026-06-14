@@ -189,6 +189,55 @@ def test_build_prediction_empty_image_returns_frames():
 
 
 # ---------------------------------------------------------------------------
+# build_prediction con 24 pasos (Sesión 4)
+# ---------------------------------------------------------------------------
+
+def test_build_prediction_24_steps_default():
+    """Sin steps_min explícito, build_prediction devuelve 24 pasos (+5…+120 min)."""
+    from app.processing.predict import build_prediction, _DEFAULT_STEPS_MIN
+
+    assert _DEFAULT_STEPS_MIN == list(range(5, 121, 5)), "Se esperan 24 pasos de 5 en 5"
+
+    frame_bytes = (FIXTURES / "frame1.png").read_bytes()
+    result = build_prediction(
+        frame_older=frame_bytes,
+        frame_newer=frame_bytes,
+        interval_seconds=90.0,
+        bounds=BOUNDS,
+        wind_grid=WIND_GRID,
+    )
+
+    assert len(result["steps"]) == 24
+    assert result["steps"][0]["minutes"] == 5
+    assert result["steps"][-1]["minutes"] == 120
+
+
+def test_build_prediction_with_frames_recent():
+    """frames_recent activa multi-frame motion; el resultado sigue siendo válido."""
+    from datetime import datetime, timedelta, timezone
+    from app.processing.predict import build_prediction
+
+    t0 = datetime(2026, 6, 11, 4, 0, tzinfo=timezone.utc)
+    t1 = t0 + timedelta(seconds=90)
+    t2 = t0 + timedelta(seconds=180)
+
+    frame_bytes = (FIXTURES / "frame1.png").read_bytes()
+    frames_recent = [(frame_bytes, t2), (frame_bytes, t1), (frame_bytes, t0)]
+
+    result = build_prediction(
+        frame_older=frame_bytes,
+        frame_newer=frame_bytes,
+        interval_seconds=90.0,
+        bounds=BOUNDS,
+        wind_grid=WIND_GRID,
+        frames_recent=frames_recent,
+    )
+
+    assert len(result["steps"]) == 24
+    assert result["method"] in ("semi_lagrangian", "static_persistence")
+
+
+# ---------------------------------------------------------------------------
 # Utilidades internas de test
 # ---------------------------------------------------------------------------
 

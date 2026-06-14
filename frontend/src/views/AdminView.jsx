@@ -6,7 +6,7 @@
  */
 
 import { useState, useEffect, useCallback } from "react"
-import { getPoints, getPredictions, createPoint, updatePoint, deletePoint } from "../api.js"
+import { getPoints, getPredictions, createPoint, updatePoint, deletePoint, getEtaStability } from "../api.js"
 import { theme } from "../theme.js"
 
 const OUTCOME_LABELS = {
@@ -21,6 +21,127 @@ function fmtUtc(str) {
   return new Date(str).toLocaleString("es-MX", {
     dateStyle: "short", timeStyle: "short", timeZone: "America/Mexico_City",
   })
+}
+
+// ---------------------------------------------------------------------------
+// Sección de estabilidad de la ETA
+// ---------------------------------------------------------------------------
+
+function jitterColor(jitter) {
+  if (jitter == null) return theme.textFaint
+  if (jitter <= 5) return theme.green
+  if (jitter <= 15) return "#D97706"   // ámbar
+  return theme.red ?? "#DC2626"
+}
+
+/** Mini-sparkline SVG de los últimos etas (serie de números|null). */
+function Sparkline({ series }) {
+  if (!series || series.length === 0) return <span style={{ color: theme.textFaint }}>—</span>
+  const valid = series.filter(v => v != null)
+  if (valid.length < 2) return <span style={{ color: theme.textFaint }}>—</span>
+  const W = 80, H = 28, pad = 2
+  const minV = Math.min(...valid), maxV = Math.max(...valid)
+  const range = maxV - minV || 1
+  const pts = series
+    .map((v, i) => {
+      const x = pad + (i / (series.length - 1)) * (W - pad * 2)
+      const y = v == null ? null : H - pad - ((v - minV) / range) * (H - pad * 2)
+      return { x, y }
+    })
+  const linePts = pts.filter(p => p.y != null).map(p => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" ")
+  return (
+    <svg width={W} height={H} style={{ verticalAlign: "middle" }}>
+      <polyline
+        points={linePts}
+        fill="none"
+        stroke={theme.primary}
+        strokeWidth="1.5"
+        strokeLinejoin="round"
+      />
+    </svg>
+  )
+}
+
+function EtaStabilityPanel() {
+  const [data, setData] = useState([])
+  const [hours, setHours] = useState(6)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    setLoading(true)
+    getEtaStability(hours)
+      .then(setData)
+      .catch(() => setData([]))
+      .finally(() => setLoading(false))
+  }, [hours])
+
+  return (
+    <div style={st.section}>
+      <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "12px", flexWrap: "wrap" }}>
+        <h3 style={st.sectionTitle}>Estabilidad de la ETA</h3>
+        <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
+          {[3, 6, 12, 24].map(h => (
+            <button
+              key={h}
+              style={{ ...st.btnSmall, fontWeight: hours === h ? 700 : 400, color: hours === h ? theme.primary : theme.textMuted, borderColor: hours === h ? theme.primary + "55" : theme.borderMid }}
+              onClick={() => setHours(h)}
+            >
+              {h}h
+            </button>
+          ))}
+        </div>
+      </div>
+      {loading ? (
+        <p style={st.muted}>Cargando…</p>
+      ) : data.length === 0 ? (
+        <p style={st.muted}>Sin datos para este período. Asegúrate de que el backend ha acumulado ≥2 ciclos.</p>
+      ) : (
+        <div style={{ overflowX: "auto" }}>
+          <table style={st.table}>
+            <thead>
+              <tr>
+                {["Punto", "Método actual", "ETA actual", "Jitter Δ̄", "Std", "Cambios método", "% con ETA", "Serie (últimos 30)"].map(h => (
+                  <th key={h} style={st.th}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {data.map(row => (
+                <tr key={row.point_id} style={st.tr}>
+                  <td style={st.td}><code style={st.code}>{row.point_id}</code></td>
+                  <td style={st.td}><code style={st.code}>{row.current_method ?? "—"}</code></td>
+                  <td style={{ ...st.td, fontFamily: theme.fontMono }}>
+                    {row.last_eta != null ? `${row.last_eta} min` : "—"}
+                  </td>
+                  <td style={st.td}>
+                    <span style={{ fontFamily: theme.fontMono, fontWeight: 700, color: jitterColor(row.jitter) }}>
+                      {row.jitter != null ? `±${row.jitter}` : "—"}
+                    </span>
+                  </td>
+                  <td style={{ ...st.td, fontFamily: theme.fontMono }}>
+                    {row.eta_std != null ? row.eta_std : "—"}
+                  </td>
+                  <td style={{ ...st.td, textAlign: "center" }}>
+                    <span style={{ color: row.method_changes > 3 ? (theme.red ?? "#DC2626") : theme.text }}>
+                      {row.method_changes}
+                    </span>
+                  </td>
+                  <td style={{ ...st.td, fontFamily: theme.fontMono }}>
+                    {(row.pct_with_eta * 100).toFixed(0)}%
+                  </td>
+                  <td style={st.td}><Sparkline series={row.series} /></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p style={{ ...st.muted, marginTop: "8px" }}>
+            Jitter = Δ medio |·| entre ETAs consecutivas. Verde ≤5 min, ámbar ≤15, rojo &gt;15.
+            Cambios de método en rojo si &gt;3 — sugiere alternancia entre métodos (inestabilidad de fuente).
+          </p>
+        </div>
+      )}
+    </div>
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -296,6 +417,7 @@ export default function AdminView() {
         </p>
       </div>
 
+      <EtaStabilityPanel />
       <PointsManager token={token} />
       <PredictionsTable />
     </div>

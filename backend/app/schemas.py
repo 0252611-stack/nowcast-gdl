@@ -149,6 +149,15 @@ class NowcastResult(BaseModel):
     trajectory_wind: list[WindSample] | None = Field(
         None, description="Viento 700 hPa en puntos intermedios entre el eco y el punto monitoreado"
     )
+    # Estabilidad / blend (Sesión 4): tendencia de área del eco y acuerdo con NWP
+    intensity_trend: float | None = Field(
+        None, ge=-1, le=1,
+        description="Tendencia de área del eco entre frames: >0 crece, <0 se disipa",
+    )
+    model_agreement: float | None = Field(
+        None, ge=0, le=1,
+        description="Probabilidad de precipitación del modelo NWP (Open-Meteo) en la hora de llegada",
+    )
     generated_at: datetime
     method: str = Field(
         "unknown",

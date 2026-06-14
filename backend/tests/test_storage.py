@@ -7,6 +7,7 @@ import pytest
 
 from app.schemas import RadarCategory, RadarReading
 from app.storage import (
+    get_eta_stability,
     get_latest_reading,
     get_recent_frames,
     init_db,
@@ -97,3 +98,61 @@ def test_purge_old_frames(db):
     assert deleted >= 1
     frames = get_recent_frames(db, n=10)
     assert len(frames) == 1
+
+
+# ---------------------------------------------------------------------------
+# get_eta_stability (Sesión 4)
+# ---------------------------------------------------------------------------
+
+def test_get_eta_stability_empty(db):
+    """Sin predicciones → lista vacía."""
+    result = get_eta_stability(db, hours=6)
+    assert result == []
+
+
+def test_get_eta_stability_calculates_jitter_and_method_changes(db):
+    """Inserta predicciones sintéticas y verifica jitter + method_changes."""
+    from datetime import timedelta
+    from app.storage import get_eta_stability
+
+    # Usar timestamps relativos para que siempre caigan dentro de la ventana de 24 h
+    def _ts(offset_minutes: int) -> str:
+        t = datetime.now(timezone.utc) - timedelta(minutes=offset_minutes)
+        return t.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def _target(offset_minutes: int) -> str:
+        t = datetime.now(timezone.utc) - timedelta(minutes=offset_minutes - 60)
+        return t.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    # Insertar 4 predicciones para un punto con ETAs variables
+    rows = [
+        ("pt1", _ts(8), 0, 1, 30, 0.8, "advection",           60, _target(8), None),
+        ("pt1", _ts(6), 0, 1, 45, 0.7, "advection",           60, _target(6), None),
+        ("pt1", _ts(4), 0, 0, None, None, "no_approaching_cell", 60, _target(4), None),
+        ("pt1", _ts(2), 0, 1, 20, 0.6, "advection",           60, _target(2), None),
+    ]
+    db.executemany(
+        """INSERT INTO nowcast_predictions
+           (point_id, generated_at_utc, raining_now, predicted_rain,
+            eta_minutes, confidence, method, horizon_minutes,
+            target_time_utc, predicted_arrival_utc)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        rows,
+    )
+    db.commit()
+
+    result = get_eta_stability(db, hours=24)
+    assert len(result) == 1
+    row = result[0]
+
+    assert row["point_id"] == "pt1"
+    assert row["n"] == 4
+    assert row["pct_with_eta"] == pytest.approx(0.75)   # 3 de 4 tienen eta
+    assert row["eta_mean"] is not None
+    assert row["jitter"] is not None
+    assert row["jitter"] >= 0
+    # Hay un cambio de método (advection → no_approaching_cell → advection) = 2 cambios
+    assert row["method_changes"] == 2
+    assert len(row["series"]) == 4   # todos en la serie
+    assert row["current_method"] == "advection"
+    assert row["last_eta"] == 20

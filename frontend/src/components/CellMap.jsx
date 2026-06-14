@@ -121,8 +121,9 @@ function polygonCentroid(ring) {
 /**
  * Devuelve hasta `maxArrows` posiciones [lat, lon] interiores al polígono `ring`
  * usando una grilla adaptativa al tamaño del eco. Siempre incluye el centroide.
+ * Con maxArrows=15 y espaciado más fino, se muestran varias flechas por eco.
  */
-function echoArrowPositions(ring, maxArrows = 7) {
+function echoArrowPositions(ring, maxArrows = 15) {
   const centroid = polygonCentroid(ring)
   const lats = ring.map(p => p[0])
   const lons = ring.map(p => p[1])
@@ -131,10 +132,10 @@ function echoArrowPositions(ring, maxArrows = 7) {
   const span = Math.max(maxLat - minLat, maxLon - minLon)
 
   // Ecos muy pequeños: solo el centroide
-  if (span < 0.12) return [centroid]
+  if (span < 0.05) return [centroid]
 
-  // Espaciado adaptativo para obtener ~maxArrows puntos interiores
-  const spacing = Math.max(0.12, span / 2.5)
+  // Espaciado adaptativo fino: más puntos interiores por eco
+  const spacing = Math.max(0.05, span / 5)
   const pts = [centroid]
 
   outer:
@@ -143,7 +144,7 @@ function echoArrowPositions(ring, maxArrows = 7) {
       if (pts.length >= maxArrows) break outer
       const pt = [lat, lon]
       const distToCentroid = Math.hypot(lat - centroid[0], lon - centroid[1])
-      if (distToCentroid > spacing * 0.4 && pointInPolygon(pt, ring)) pts.push(pt)
+      if (distToCentroid > spacing * 0.3 && pointInPolygon(pt, ring)) pts.push(pt)
     }
   }
   return pts

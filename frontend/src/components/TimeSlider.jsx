@@ -10,7 +10,7 @@
 import { useState, useEffect } from "react"
 import { theme } from "../theme.js"
 
-const PLAY_INTERVAL_MS = 750
+const PLAY_INTERVAL_MS = 350  // ~350 ms: 24 frames se reproducen fluido (~8 s)
 
 export default function TimeSlider({ step, steps, baseTime, onStepChange }) {
   const [playing, setPlaying] = useState(false)
@@ -72,16 +72,17 @@ export default function TimeSlider({ step, steps, baseTime, onStepChange }) {
           max={steps.length}
           value={step}
           onChange={e => {
-            setPlaying(false)
+            // NO detenemos la reproducción: el usuario puede arrastrar mientras
+            // el slider avanza solo (auto-play + scrubbing simultáneos).
             onStepChange(Number(e.target.value))
           }}
           style={st.slider}
           aria-label="Seleccionar paso temporal"
         />
-        {/* Marcas de tiempo */}
+        {/* Marcas cada 30 min (no todos los 24 ticks — saturarían la UI) */}
         <div style={st.ticks}>
           <span style={st.tick}>Ahora</span>
-          {steps.filter((_, i) => i % 2 === 1).map(s => (
+          {steps.filter(s => s.minutes % 30 === 0).map(s => (
             <span key={s.minutes} style={st.tick}>+{s.minutes}&apos;</span>
           ))}
         </div>

@@ -21,11 +21,19 @@ from app.nowcast.engine import estimate_arrival
 from app.processing.motion import compute_cell_motion, find_context_echoes, find_echo_contours
 from app.scheduler import RadarState, run_forecast_loop, run_radar_loop
 from app.schemas import ContextEcho, WindSample
-from app.sources.openmeteo import fetch_forecast, fetch_wind_700_at, sample_trajectory_wind, sample_wind_grid
+from app.sources.openmeteo import (
+    fetch_ensemble,
+    fetch_forecast,
+    fetch_wind_700_at,
+    sample_precip_grid,
+    sample_trajectory_wind,
+    sample_wind_grid,
+)
 from app.sources.rainviewer import fetch_tile_url as fetch_rainviewer_url
 from app.storage import (
     add_point,
     delete_point,
+    get_eta_stability,
     get_latest_reading,
     get_predictions,
     get_recent_frames,
@@ -142,6 +150,18 @@ async def metrics():
     return get_skill_metrics(app.state.db)
 
 
+@app.get("/eta-stability")
+async def eta_stability(hours: int = 6):
+    """Variabilidad de la ETA por punto en las últimas `hours` horas.
+
+    Devuelve lista de {point_id, n, eta_mean, eta_std, jitter, method_changes,
+    pct_with_eta, current_method, last_eta, series}. Útil para monitorear
+    cuánto salta la predicción de ciclo a ciclo y diagnosticar la causa
+    (cambios de método vs. ruido de velocidad).
+    """
+    return get_eta_stability(app.state.db, hours)
+
+
 @app.get("/predictions")
 async def list_predictions(limit: int = 100, point_id: str | None = None):
     """Historial de predicciones individuales (recientes primero)."""
@@ -182,7 +202,17 @@ async def get_radar(point_id: str):
         try:
             frames = get_recent_frames(app.state.db, 2)
             forecast = await fetch_forecast(client, pt["id"], pt["name"], pt["lat"], pt["lon"])
-            nowcast = estimate_arrival(point_id, reading, forecast, frames, state.last_bounds)
+            # Ensemble (Fase 2): probabilidad de precipitación del spread NWP
+            ensemble_prob: float | None = None
+            try:
+                ensemble_prob = await fetch_ensemble(client, pt["lat"], pt["lon"])
+            except Exception:
+                pass
+            nowcast = estimate_arrival(
+                point_id, reading, forecast, frames, state.last_bounds,
+                motion_field=state.motion_field_ema,
+                ensemble_prob=ensemble_prob,
+            )
 
             if nowcast is not None and nowcast.cell_lat is not None:
                 # Viento 700 hPa en el eco
@@ -260,9 +290,9 @@ async def get_radar(point_id: str):
 async def get_prediction():
     """Predicción advectiva del campo de eco para los próximos 120 minutos.
 
-    Motor: optical flow denso (Farneback) + corrección de viento 700 hPa en
-    malla 4×4. Devuelve 8 pasos de +15 a +120 min con frames PNG y contornos.
-    Cacheado por timestamp de frame — mismo TTL ~90 s que el radar.
+    Motor: optical flow denso multi-frame (Farneback, EMA temporal) + corrección
+    de viento 700 hPa en malla 4×4. Devuelve 24 pasos de +5 a +120 min con
+    frames PNG y contornos. Cacheado por timestamp de frame (~90 s TTL).
     """
     from app.processing.predict import build_prediction
 
@@ -293,17 +323,28 @@ async def get_prediction():
         log.debug("Predicción: cache hit para frame %s", newer_time)
     else:
         interval_s = max(1.0, (newer_time - older_time).total_seconds())
-        try:
-            async with httpx.AsyncClient(
-                headers={"User-Agent": config.USER_AGENT}, timeout=15
-            ) as client:
+        wind_grid = []
+        precip_grid = []
+        async with httpx.AsyncClient(
+            headers={"User-Agent": config.USER_AGENT}, timeout=15
+        ) as client:
+            try:
                 wind_grid = await sample_wind_grid(client, state.last_bounds)
-        except Exception as exc_w:
-            log.warning("Viento en malla no disponible: %s — usando solo radar", exc_w)
-            wind_grid = []
+            except Exception as exc_w:
+                log.warning("Viento en malla no disponible: %s — usando solo radar", exc_w)
+            # Fase 2: malla de precipitación NWP para blend seamless
+            try:
+                precip_grid = await sample_precip_grid(client, state.last_bounds)
+            except Exception as exc_p:
+                log.debug("Malla de precipitación NWP no disponible: %s", exc_p)
+
+        # Frames recientes para multi-frame motion (más estable que un solo par)
+        frames_recent = get_recent_frames(app.state.db, 4)
 
         result = build_prediction(
-            older_bytes, newer_bytes, interval_s, state.last_bounds, wind_grid
+            older_bytes, newer_bytes, interval_s, state.last_bounds, wind_grid,
+            frames_recent=frames_recent,
+            precip_grid=precip_grid or None,
         )
         app.state.prediction_cache = (newer_time, result)
         log.info("Predicción generada: %d pasos, método=%s", len(result["steps"]), result["method"])

@@ -230,6 +230,124 @@ def test_project_cell_high_confidence_when_aligned():
 from app.nowcast.engine import estimate_arrival
 
 
+# ---------------------------------------------------------------------------
+# Determinismo (Sesión 4)
+# ---------------------------------------------------------------------------
+
+def test_nearest_upstream_is_deterministic():
+    """nearest_upstream_echo: 2 llamadas con la misma imagen → resultado idéntico."""
+    img = Image.open(FIXTURES / "frame1.png")
+    r1 = nearest_upstream_echo(img, BOUNDS, GDL_LAT, GDL_LON, 90.0)
+    r2 = nearest_upstream_echo(img, BOUNDS, GDL_LAT, GDL_LON, 90.0)
+    assert r1 == r2, "nearest_upstream_echo no es determinista"
+
+
+def test_find_context_echoes_is_deterministic():
+    """find_context_echoes: 2 llamadas con la misma imagen → resultado idéntico."""
+    from app.processing.motion import find_context_echoes
+    img = Image.open(FIXTURES / "frame1.png")
+    r1 = find_context_echoes(img, BOUNDS, 90.0, 30.0)
+    r2 = find_context_echoes(img, BOUNDS, 90.0, 30.0)
+    assert r1 == r2, "find_context_echoes no es determinista"
+
+
+# ---------------------------------------------------------------------------
+# multi_frame_motion_field + sample_field_at (Sesión 4)
+# ---------------------------------------------------------------------------
+
+def test_multi_frame_motion_field_shape():
+    """multi_frame_motion_field devuelve H×W×2 con eco suficiente."""
+    from app.processing.motion import multi_frame_motion_field
+    from datetime import timedelta
+
+    t0 = datetime(2026, 6, 11, 4, 0, tzinfo=timezone.utc)
+    t1 = t0 + timedelta(seconds=90)
+    frames = [(_shifted_frame(shift_x=5), t1), (_frame1_bytes(), t0)]
+    field = multi_frame_motion_field(frames, BOUNDS)
+
+    assert field is not None
+    img = Image.open(FIXTURES / "frame1.png")
+    W, H = img.size
+    assert field.shape == (H, W, 2), f"Shape esperado ({H},{W},2), obtenido {field.shape}"
+    assert field.dtype == np.float32
+
+
+def test_multi_frame_motion_field_single_frame_returns_none():
+    """Un solo frame → None (necesita ≥2)."""
+    from app.processing.motion import multi_frame_motion_field
+
+    t0 = datetime(2026, 6, 11, 4, 0, tzinfo=timezone.utc)
+    frames = [(_frame1_bytes(), t0)]
+    assert multi_frame_motion_field(frames, BOUNDS) is None
+
+
+def test_sample_field_at_returns_float_pair():
+    """sample_field_at devuelve una tupla (v_lat, v_lon) de floats."""
+    from app.processing.motion import sample_field_at, dense_motion_field
+
+    frame = _frame1_bytes()
+    field = dense_motion_field(frame, frame, 90.0, BOUNDS)
+    assert field is not None
+
+    v_lat, v_lon = sample_field_at(field, GDL_LAT, GDL_LON, BOUNDS, win=3)
+    assert isinstance(v_lat, float)
+    assert isinstance(v_lon, float)
+
+
+# ---------------------------------------------------------------------------
+# engine con motion_field precomputado (Sesión 4, mejora A/B/E)
+# ---------------------------------------------------------------------------
+
+def test_engine_with_precomputed_motion_field():
+    """estimate_arrival acepta motion_field precomputado y devuelve resultado válido."""
+    from app.processing.motion import dense_motion_field
+
+    reading = _mock_reading(dbz=-15.0)
+    t0 = datetime(2026, 6, 11, 4, 0, tzinfo=timezone.utc)
+    t1 = datetime(2026, 6, 11, 4, 1, 30, tzinfo=timezone.utc)
+
+    older = _frame1_bytes()
+    newer = _shifted_frame(shift_x=10)
+    frames = [(newer, t1), (older, t0)]
+
+    field = dense_motion_field(older, newer, 90.0, BOUNDS)
+    result = estimate_arrival("centro", reading, _mock_forecast(), frames, BOUNDS,
+                              motion_field=field)
+
+    assert isinstance(result, NowcastResult)
+    assert result.method in {"no_echo", "no_motion", "no_approaching_cell", "advection"}
+
+
+def test_engine_intensity_trend_exposed():
+    """estimate_arrival expone intensity_trend cuando hay eco."""
+    reading = _mock_reading(dbz=-15.0)
+    t0 = datetime(2026, 6, 11, 4, 0, tzinfo=timezone.utc)
+    t1 = datetime(2026, 6, 11, 4, 1, 30, tzinfo=timezone.utc)
+    older = _frame1_bytes()
+    newer = _shifted_frame(shift_x=10)
+    frames = [(newer, t1), (older, t0)]
+
+    result = estimate_arrival("centro", reading, _mock_forecast(), frames, BOUNDS)
+    # intensity_trend se expone cuando hay eco (puede ser None si no hay eco)
+    if result.method not in {"radar_unavailable", "insufficient_frames"}:
+        assert result.intensity_trend is not None or result.method in {"no_echo"}
+
+
+def test_engine_model_agreement_in_advection():
+    """En advection, model_agreement ∈ [0,1]."""
+    reading = _mock_reading(dbz=-15.0)
+    t0 = datetime(2026, 6, 11, 4, 0, tzinfo=timezone.utc)
+    t1 = datetime(2026, 6, 11, 4, 1, 30, tzinfo=timezone.utc)
+    older = _frame1_bytes()
+    newer = _shifted_frame(shift_x=10)
+    frames = [(newer, t1), (older, t0)]
+
+    result = estimate_arrival("centro", reading, _mock_forecast(), frames, BOUNDS)
+    if result.method == "advection":
+        assert result.model_agreement is not None
+        assert 0.0 <= result.model_agreement <= 1.0
+
+
 def test_engine_radar_unavailable():
     """radar=None → method=radar_unavailable, raining_now=False."""
     result = estimate_arrival("centro", None, _mock_forecast(), [], None)

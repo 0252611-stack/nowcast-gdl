@@ -72,6 +72,116 @@ def dense_motion_field(
     return np.stack([v_lat, v_lon], axis=2)  # H×W×2
 
 
+def vector_to_speed_bearing(
+    v_lat: float, v_lon: float, bounds: dict[str, float]
+) -> tuple[float, float]:
+    """Convierte un vector (v_lat, v_lon) en grados/min a (speed_kmh, bearing_deg).
+
+    bearing_deg es el rumbo meteorológico (0=N, 90=E) hacia donde apunta el vector.
+    """
+    dlon_km_per_min = v_lon * _km_per_deg_lon(bounds)
+    dlat_km_per_min = v_lat * _KM_PER_DEG_LAT
+    speed_kmh = math.sqrt(dlon_km_per_min**2 + dlat_km_per_min**2) * 60
+    bearing_deg = math.degrees(math.atan2(dlon_km_per_min, dlat_km_per_min)) % 360
+    return speed_kmh, bearing_deg
+
+
+def field_to_global_vector(
+    field: np.ndarray,
+    echo_mask: np.ndarray,
+    bounds: dict[str, float],
+) -> dict:
+    """Promedia el campo denso H×W×2 sobre la máscara de eco → vector global.
+
+    Devuelve {"speed_kmh", "bearing_deg", "n_echo_pixels"}. speed_kmh=0 si el
+    promedio es ~0 o no hay píxeles de eco. Factoriza la lógica que antes vivía
+    embebida en compute_cell_motion para poder reutilizarla con un campo ya
+    calculado (p.ej. el EMA multi-frame del scheduler).
+    """
+    n_echo_pixels = int(echo_mask.sum())
+    _empty = {"speed_kmh": 0.0, "bearing_deg": 0.0, "n_echo_pixels": n_echo_pixels}
+    if n_echo_pixels == 0:
+        return _empty
+
+    v_lat_mean = float(field[echo_mask, 0].mean())
+    v_lon_mean = float(field[echo_mask, 1].mean())
+
+    if abs(v_lat_mean) < 1e-9 and abs(v_lon_mean) < 1e-9:
+        return _empty
+
+    speed_kmh, bearing_deg = vector_to_speed_bearing(v_lat_mean, v_lon_mean, bounds)
+    if speed_kmh < 1e-6:
+        return _empty
+
+    return {"speed_kmh": speed_kmh, "bearing_deg": bearing_deg, "n_echo_pixels": n_echo_pixels}
+
+
+def sample_field_at(
+    field: np.ndarray,
+    lat: float,
+    lon: float,
+    bounds: dict[str, float],
+    win: int = 3,
+) -> tuple[float, float]:
+    """Muestrea el campo denso en (lat, lon) promediando una ventana win×win.
+
+    Devuelve (v_lat, v_lon) en grados/min. La ventana promedia para dar robustez
+    ante el ruido local del optical flow (mejora B: vector local de la celda, en
+    vez del promedio global del campo).
+    """
+    H, W = field.shape[:2]
+    north, south, east, west = bounds["north"], bounds["south"], bounds["east"], bounds["west"]
+    px = int((lon - west) / (east - west) * W)
+    py = int((north - lat) / (north - south) * H)
+    half = max(0, win // 2)
+    y0, y1 = max(0, py - half), min(H, py + half + 1)
+    x0, x1 = max(0, px - half), min(W, px + half + 1)
+    if y0 >= y1 or x0 >= x1:
+        return (0.0, 0.0)
+    patch = field[y0:y1, x0:x1]
+    return (float(patch[:, :, 0].mean()), float(patch[:, :, 1].mean()))
+
+
+def multi_frame_motion_field(
+    frames: list[tuple[bytes, "datetime"]],
+    bounds: dict[str, float],
+    max_pairs: int = 3,
+) -> np.ndarray | None:
+    """Campo de movimiento promediado sobre varios pares consecutivos de frames.
+
+    `frames` = lista (png_bytes, datetime) del más reciente al más viejo (igual
+    que get_recent_frames). Calcula dense_motion_field para cada par consecutivo
+    (older, newer) y los promedia con peso decreciente (0.6**i: el par más reciente
+    pesa más). Devuelve H×W×2 (grados/min) o None si hay <2 frames o ningún par
+    produce flujo.
+
+    Reduce el ruido temporal del optical flow de un solo par (mejora C: estabilidad).
+    """
+    if len(frames) < 2:
+        return None
+
+    n_pairs = min(max_pairs, len(frames) - 1)
+    acc: np.ndarray | None = None
+    weight_sum = 0.0
+
+    for i in range(n_pairs):
+        newer_bytes, newer_time = frames[i]
+        older_bytes, older_time = frames[i + 1]
+        interval_s = max(1.0, (newer_time - older_time).total_seconds())
+        field = dense_motion_field(older_bytes, newer_bytes, interval_s, bounds)
+        if field is None:
+            continue
+        w = 0.6 ** i
+        if acc is None:
+            acc = np.zeros_like(field)
+        acc += w * field
+        weight_sum += w
+
+    if acc is None or weight_sum == 0:
+        return None
+    return (acc / weight_sum).astype(np.float32)
+
+
 def compute_cell_motion(
     frame_older: bytes,
     frame_newer: bytes,
@@ -89,33 +199,14 @@ def compute_cell_motion(
     echo_mask = alpha_older > 0
     n_echo_pixels = int(echo_mask.sum())
 
-    _empty = {"speed_kmh": 0.0, "bearing_deg": 0.0, "n_echo_pixels": n_echo_pixels}
-
     if n_echo_pixels < _MIN_ECHO_PIXELS:
-        return _empty
+        return {"speed_kmh": 0.0, "bearing_deg": 0.0, "n_echo_pixels": n_echo_pixels}
 
     field = dense_motion_field(frame_older, frame_newer, interval_seconds, bounds)
     if field is None:
-        return _empty
+        return {"speed_kmh": 0.0, "bearing_deg": 0.0, "n_echo_pixels": n_echo_pixels}
 
-    # Promediar campo denso sobre píxeles con eco → vector global
-    v_lat_mean = float(field[echo_mask, 0].mean())
-    v_lon_mean = float(field[echo_mask, 1].mean())
-
-    if abs(v_lat_mean) < 1e-9 and abs(v_lon_mean) < 1e-9:
-        return _empty
-
-    # Convertir deg/min → km/h y rumbo meteorológico
-    dlon_km_per_min = v_lon_mean * _km_per_deg_lon(bounds)
-    dlat_km_per_min = v_lat_mean * _KM_PER_DEG_LAT
-
-    speed_kmh = math.sqrt(dlon_km_per_min**2 + dlat_km_per_min**2) * 60
-    if speed_kmh < 1e-6:
-        return _empty
-
-    bearing_deg = math.degrees(math.atan2(dlon_km_per_min, dlat_km_per_min)) % 360
-
-    return {"speed_kmh": speed_kmh, "bearing_deg": bearing_deg, "n_echo_pixels": n_echo_pixels}
+    return field_to_global_vector(field, echo_mask, bounds)
 
 
 def nearest_upstream_echo(
@@ -143,7 +234,9 @@ def nearest_upstream_echo(
 
     # Subsample para eficiencia en la búsqueda del vecino más cercano en colormap
     if len(xs) > _MAX_ECHO_SAMPLE:
-        idx = np.random.choice(len(xs), _MAX_ECHO_SAMPLE, replace=False)
+        # Submuestreo DETERMINISTA por stride: misma imagen → mismo resultado.
+        # (antes np.random.choice hacía que la ETA saltara de ciclo a ciclo)
+        idx = np.linspace(0, len(xs) - 1, _MAX_ECHO_SAMPLE).astype(int)
         ys = ys[idx]
         xs = xs[idx]
 
@@ -239,7 +332,9 @@ def find_context_echoes(
         return []
 
     if len(xs) > _MAX_ECHO_SAMPLE:
-        idx = np.random.choice(len(xs), _MAX_ECHO_SAMPLE, replace=False)
+        # Submuestreo DETERMINISTA por stride: misma imagen → mismo resultado.
+        # (antes np.random.choice hacía que la ETA saltara de ciclo a ciclo)
+        idx = np.linspace(0, len(xs) - 1, _MAX_ECHO_SAMPLE).astype(int)
         ys = ys[idx]
         xs = xs[idx]
 

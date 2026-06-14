@@ -13,10 +13,13 @@ import httpx
 from PIL import Image
 
 from app import config
+import numpy as np
+
 from app.nowcast.engine import estimate_arrival
+from app.processing.motion import multi_frame_motion_field
 from app.processing.pixel_extract import reading_for_point
 from app.schemas import WindSample
-from app.sources.openmeteo import fetch_all_points, fetch_forecast, fetch_wind_700_at, sample_trajectory_wind
+from app.sources.openmeteo import fetch_all_points, fetch_ensemble, fetch_forecast, fetch_wind_700_at, sample_trajectory_wind
 from app.sources.radar_iam import RadarUnavailable, fetch_current_frame
 from app.storage import (
     get_latest_reading,
@@ -39,6 +42,10 @@ class RadarState:
     consecutive_failures: int = 0
     last_kmz_url: str | None = None
     last_bounds: dict | None = None
+    # EMA del campo de movimiento (multi-frame, suavizado temporal)
+    motion_field_ema: object | None = None   # np.ndarray H×W×2 | None
+    # Última ETA por punto para log de variabilidad
+    last_eta: dict = field(default_factory=dict)  # point_id → (eta_min|None, method)
 
 
 def _scan_time_from_kmz_url(kmz_url: str) -> datetime:
@@ -87,6 +94,18 @@ async def run_radar_loop(conn: sqlite3.Connection, state: RadarState) -> None:
 
             purge_old_frames(conn, config.RADAR_RETENTION_HOURS)
 
+            # Calcular el campo de movimiento multi-frame UNA VEZ por ciclo (no por punto).
+            # Mantener EMA temporal para suavizar ciclo a ciclo.
+            frames_for_motion = get_recent_frames(conn, 4)
+            if state.last_bounds and len(frames_for_motion) >= 2:
+                new_field = multi_frame_motion_field(frames_for_motion, state.last_bounds)
+                if new_field is not None:
+                    prev = state.motion_field_ema
+                    if isinstance(prev, np.ndarray) and prev.shape == new_field.shape:
+                        state.motion_field_ema = (0.5 * new_field + 0.5 * prev).astype(np.float32)
+                    else:
+                        state.motion_field_ema = new_field
+
             # Emitir una predicción por punto y registrarla para verificación posterior
             frames = get_recent_frames(conn, 2)
             async with httpx.AsyncClient(
@@ -98,8 +117,16 @@ async def run_radar_loop(conn: sqlite3.Connection, state: RadarState) -> None:
                             fc, pt["id"], pt["name"], pt["lat"], pt["lon"]
                         )
                         reading = get_latest_reading(conn, pt["id"])
+                        # Ensemble prob (Fase 2) — degradación silenciosa si falla
+                        ens_prob: float | None = None
+                        try:
+                            ens_prob = await fetch_ensemble(fc, pt["lat"], pt["lon"])
+                        except Exception:
+                            pass
                         result = estimate_arrival(
-                            pt["id"], reading, forecast, frames, state.last_bounds
+                            pt["id"], reading, forecast, frames, state.last_bounds,
+                            motion_field=state.motion_field_ema,
+                            ensemble_prob=ens_prob,
                         )
                         if result.cell_lat is not None:
                             try:
@@ -116,6 +143,29 @@ async def run_radar_loop(conn: sqlite3.Connection, state: RadarState) -> None:
                             except Exception as exc:
                                 log.debug("Trajectory wind no disponible: %s", exc)
                         save_prediction(conn, result)
+
+                        # Log de variabilidad: mostrar delta respecto al ciclo anterior
+                        pid = pt["id"]
+                        prev_eta, prev_method = state.last_eta.get(pid, (None, None))
+                        curr_eta = result.eta_minutes
+                        curr_method = result.method
+                        if prev_eta is not None and curr_eta is not None:
+                            delta = curr_eta - prev_eta
+                            log.info(
+                                "ETA[%s] %s→%s min (Δ%+d) método=%s vel=%s rumbo=%s "
+                                "trend=%s conf=%s",
+                                pid, prev_eta, curr_eta, delta, curr_method,
+                                result.cell_speed_kmh, result.cell_bearing_deg,
+                                result.intensity_trend, result.confidence,
+                            )
+                        elif curr_eta is not None or prev_eta is not None:
+                            log.info(
+                                "ETA[%s] %s→%s min método=%s vel=%s trend=%s conf=%s",
+                                pid, prev_eta, curr_eta, curr_method,
+                                result.cell_speed_kmh, result.intensity_trend, result.confidence,
+                            )
+                        state.last_eta[pid] = (curr_eta, curr_method)
+
                     except Exception as exc:
                         log.warning("Error emitiendo predicción para %s: %s", pt["id"], exc)
 

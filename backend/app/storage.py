@@ -299,6 +299,84 @@ def get_skill_metrics(conn: sqlite3.Connection) -> dict:
     }
 
 
+def get_eta_stability(conn: sqlite3.Connection, hours: int = 6) -> list[dict]:
+    """Estadísticas de variabilidad de la ETA para cada punto (últimas `hours` horas).
+
+    Calcula por punto:
+      n              — número de predicciones en el período
+      eta_mean       — media de eta_minutes (ignorando None)
+      eta_std        — desviación estándar de eta_minutes
+      jitter         — Δ medio absoluto entre etas consecutivas no nulas
+      method_changes — número de cambios de método consecutivos
+      pct_with_eta   — fracción de predicciones que tienen eta_minutes != None
+      current_method — método de la predicción más reciente
+      last_eta       — eta_minutes de la predicción más reciente
+      series         — lista de los últimos ~30 etas (puede incluir None)
+
+    No requiere migración: usa columnas existentes de nowcast_predictions.
+    """
+    rows = conn.execute(
+        """SELECT point_id, generated_at_utc, eta_minutes, method
+           FROM nowcast_predictions
+           WHERE generated_at_utc >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', ?)
+           ORDER BY point_id, generated_at_utc ASC""",
+        (f"-{hours} hours",),
+    ).fetchall()
+
+    # Agrupar por punto
+    from collections import defaultdict
+    by_point: dict[str, list[dict]] = defaultdict(list)
+    for point_id, gen_at, eta, method in rows:
+        by_point[point_id].append({"gen_at": gen_at, "eta": eta, "method": method})
+
+    result = []
+    for point_id, entries in by_point.items():
+        n = len(entries)
+        etas = [e["eta"] for e in entries]
+        etas_valid = [e for e in etas if e is not None]
+        methods = [e["method"] for e in entries]
+
+        eta_mean = round(sum(etas_valid) / len(etas_valid), 1) if etas_valid else None
+        if len(etas_valid) >= 2:
+            mean_v = sum(etas_valid) / len(etas_valid)
+            eta_std = round((sum((v - mean_v) ** 2 for v in etas_valid) / len(etas_valid)) ** 0.5, 1)
+        else:
+            eta_std = None
+
+        # Jitter: Δ medio |·| entre etas consecutivas no nulas
+        jitter_deltas = []
+        prev = None
+        for e in etas:
+            if e is not None:
+                if prev is not None:
+                    jitter_deltas.append(abs(e - prev))
+                prev = e
+        jitter = round(sum(jitter_deltas) / len(jitter_deltas), 1) if jitter_deltas else None
+
+        # Cambios de método
+        method_changes = sum(1 for i in range(1, len(methods)) if methods[i] != methods[i - 1])
+
+        pct_with_eta = round(len(etas_valid) / n, 3) if n > 0 else 0.0
+
+        # Serie de los últimos 30 etas para mini-sparkline
+        series = etas[-30:]
+
+        result.append({
+            "point_id": point_id,
+            "n": n,
+            "eta_mean": eta_mean,
+            "eta_std": eta_std,
+            "jitter": jitter,
+            "method_changes": method_changes,
+            "pct_with_eta": pct_with_eta,
+            "current_method": methods[-1] if methods else None,
+            "last_eta": etas[-1] if etas else None,
+            "series": series,
+        })
+
+    return result
+
+
 def purge_old_predictions(conn: sqlite3.Connection, retention_hours: int = 168) -> int:
     """Elimina predicciones con más de retention_hours horas (default 7 días)."""
     cursor = conn.execute(

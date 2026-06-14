@@ -422,3 +422,281 @@ lejanos (Tototlán, Zapotlán del Rey) no mostraban ninguna flecha.
 - El badge "Eco débil" quedó en el código pero con el colormap fijo los ecos reales
   leen ≥10 dBZ → raining_now=True; puede revisarse si aplica removerlo
 - Verificar en campo la precisión de los ETA post-calibración
+
+---
+
+## Sesión 3 — 13 jun 2026
+
+### Feat: contorno causante en naranja + flechas de movimiento interior ✅ — 13 jun 2026
+
+**Objetivo:** Reemplazar el marcador circular naranja del eco causante por feedback
+más rico: el polígono contorno se dibuja en naranja/grueso, y flechas de movimiento
+de campo se muestran dentro de TODOS los ecos.
+
+**Entregado — `frontend/src/components/CellMap.jsx`:**
+- Eliminado el `CircleMarker` naranja del eco causante.
+- Render de `echoContours` refactorizado con `Fragment`: por cada contorno se detecta
+  si es causante (`pointInPolygon` sobre posiciones de causante), se dibuja el
+  `Polygon` con `color: theme.orange, weight: 3` si es causante vs `color: theme.text, weight: 1.5`
+  para los demás.
+- Flechas de campo (`echoArrowPositions`) colocadas dentro de TODOS los contornos,
+  no solo los más fuertes. El tooltip del eco causante se migró al `Marker` de la flecha.
+- `import { useEffect, Fragment }` — `CircleMarker` eliminado de las importaciones.
+
+**Entregado — `frontend/src/views/MapView.jsx`:**
+- Leyenda actualizada: "Eco causante" pasa de "punto naranja" a "Contorno del eco causante"
+  (línea naranja de 2px).
+
+**Lint:** ✅ | **Build:** ✅ | **Deploy:** pusheado a `master` → Railway/Vercel
+
+---
+
+### Feat: pestaña Predicción — nowcast de campo con animación temporal ✅ — 13 jun 2026
+
+**Objetivo:** Nueva pestaña `/prediccion` que muestra cómo se moverán todos los
+ecos en las próximas 2 horas, con slider temporal de reproducción.
+
+**Motor:** Flujo óptico denso (Farneback) como motor principal + corrección viento
+700 hPa en malla 4×4. Horizonte: 120 min en pasos de 15 (8 frames). Cómputo bajo
+demanda, cacheado por timestamp del frame base.
+
+#### Backend
+
+**`backend/app/processing/motion.py`:**
+- Nueva función `dense_motion_field(frame_older, frame_newer, interval_seconds, bounds) -> np.ndarray | None`
+  que devuelve H×W×2 float32 (v_lat, v_lon) en grados/min. None si <_MIN_ECHO_PIXELS.
+- `compute_cell_motion` refactorizado para llamar a `dense_motion_field` y promediar;
+  API pública idéntica, sin romper tests existentes.
+
+**`backend/app/sources/openmeteo.py`:**
+- Nueva `async def sample_wind_grid(client, bounds, nx=4, ny=4) -> list[dict]`
+  que muestrea 16 puntos sobre el área del radar usando `fetch_wind_700_at` (ya cacheada).
+  Devuelve `[{lat, lon, toward_deg, speed_kmh}]`.
+
+**NUEVO `backend/app/processing/predict.py`:**
+- `_wind_grid_to_field(wind_grid, H, W, bounds)` — IDW interpolation pura numpy (sin scipy).
+- `blend_motion_field(radar_field, echo_alpha, wind_grid, bounds)` — combina campo radar
+  (ponderado por alpha Gaussian del eco) con campo viento (donde no hay eco).
+- `advect_image(rgba, motion_field, minutes, bounds) -> PIL.Image` — advección
+  semi-Lagrangiana hacia atrás con `cv2.remap`; fondo transparente.
+- `build_prediction(frame_older, frame_newer, interval_seconds, bounds, wind_grid, steps_min) -> dict`
+  — orquesta pipeline completo; genera contornos por frame y polilíneas de trayectoria.
+
+**`backend/app/main.py`:**
+- `app.state.prediction_cache: tuple | None = None` inicializado en lifespan.
+- `GET /prediction` → `{available, base_time, bounds, method, steps[{minutes, image_url, contours}], trajectories}`.
+  Cachea resultado por `newer_time` del frame base (~90 s).
+- `GET /prediction/frame/{idx}.png` → sirve PNG del cache (404 si fuera de rango).
+
+**NUEVO `backend/tests/test_predict.py`:**
+- 9 tests nuevos: shape del campo denso, advección preserva tamaño, frame idéntico con
+  `minutes=0`, blend sin viento ≈ campo radar, `build_prediction` produce N pasos, etc.
+- **17 tests totales en este módulo** (todos verdes).
+
+#### Frontend
+
+**`frontend/src/api.js`:**
+- Añadido `getPrediction() -> Promise<PredictionResult>` con typedef completo
+  (`available`, `base_time`, `bounds`, `steps[{minutes, image_url, contours}]`, `trajectories`).
+
+**`frontend/src/components/CellMap.jsx`:**
+- Nueva prop `trajectories = []` — renderiza cada polilínea como `<Polyline>`
+  con `dashArray="4 6"`, color `theme.primary`, opacidad 0.6.
+
+**NUEVO `frontend/src/components/TimeSlider.jsx`:**
+- `<input type="range" min=0 max={steps.length}>` + botón play/pause (`setInterval` 750 ms).
+- Respeta `prefers-reduced-motion` (no auto-play si reducción de movimiento activa).
+- Etiqueta: "Ahora" (step 0) o "+{min} min · HH:MM" en `America/Mexico_City`.
+- Opacidad de etiqueta decrece de 1.0 a 0.3 (incertidumbre creciente).
+- ESLint fix: apóstrofe en JSX → `&apos;`.
+
+**NUEVO `frontend/src/views/PredictionView.jsx`:**
+- Carga `getPoints()` + `getRadar(pts[0].id)` (contornos actuales) + `getPrediction()` en paralelo.
+- Estado `step` (0=ahora, 1-8=frames predichos).
+- `radarImageUrl`: `/radar/image` (step 0) o `/prediction/frame/{step-1}.png` (steps 1-8).
+- `echoContours`: actuales (step 0) o `steps[step-1].contours` (steps 1-8).
+- `trajectories`: visible solo en step 0 (polilíneas de t=0 a +120 min).
+- Aviso de incertidumbre cuando step > 2: "La precisión disminuye después de ~30 min".
+- Badge "Adv. semi-Lagrangiana" o "Persistencia" cuando disponible.
+- Mensaje claro cuando radar no disponible.
+
+**`frontend/src/App.jsx`:**
+- `import PredictionView` + `<NavLink to="/prediccion">Predicción</NavLink>`.
+- `<Route path="/prediccion" element={<PredictionView />} />`.
+
+**Sin dependencias nuevas:** `cv2.remap`, `numpy`, `PIL` ya estaban en `requirements.txt`.
+
+**Limitación honesta comunicada en UI:** la extrapolación Lagrangiana es confiable
+~20-30 min; más allá no modela formación/disipación de ecos. El aviso en pantalla
+y la opacidad decreciente del TimeSlider comunican esto visualmente.
+
+**Nota operativa:** Railway reinicia con estado vacío. La primera llamada a
+`/prediction` devuelve `available: false, method: "insufficient_frames"` hasta
+acumular ≥2 frames (~3 min de uptime). Comportamiento correcto, no un bug.
+
+**Tests:** 17/17 nuevos ✅ (95+17 = 112 totales) | **Lint:** ✅ | **Build:** ✅
+**Verificado en navegador** (`https://nowcast-gdl.vercel.app/prediccion`):
+- Badge "Adv. semi-Lagrangiana", mapa con ecos reales, slider funcional play/pause.
+- Animación avanza del frame actual a +120 min; contornos y overlay se desplazan.
+- Aviso de incertidumbre visible en steps > 2.
+
+**Deploy:** pusheado a `master` → Railway/Vercel auto-deploy.
+
+---
+
+### Estado actual — inicio de próxima sesión
+
+**Stack completo:**
+- Backend Railway: `https://nowcast-gdl-production.up.railway.app`
+- Frontend Vercel: `https://nowcast-gdl.vercel.app`
+
+**Pendiente:**
+- Calibración fina con lluvia real de temporada
+- Verificar en campo la precisión de los ETA post-calibración del colormap
+
+---
+
+## Sesión 4 — 13 jun 2026 — Mejoras de predicción en 3 fases
+
+Plan aprobado por el usuario: UX (más flechas, pasos 5 min, slider auto-play+arrastre,
+panel de variabilidad) + motor A–E + blend NWP real + Doppler `_VR_`. Se ejecuta en
+**3 fases independientes y testeables**. Este bloque se va actualizando con cada avance
+por si la sesión se cierra (el usuario pidie llevar registro incremental aquí).
+
+**Diagnóstico de variabilidad de la ETA:** la ETA colapsaba el campo denso a un vector
+global, el flujo se calculaba solo entre 2 frames, y `nearest_upstream_echo` /
+`find_context_echoes` usaban `np.random.choice` → **no determinista** (misma imagen,
+distinta ETA cada ciclo). Solución: determinismo + EMA + vector por celda + multi-frame.
+
+### Fase 1 — UX + estabilidad + motor A–E (pragmático)
+
+Estado: **COMPLETADA** ✅ (13-jun-2026)
+
+Checklist:
+- [x] 1.1 `motion.py`: determinismo (`np.linspace` stride), `multi_frame_motion_field`,
+      `field_to_global_vector`, `sample_field_at`, `vector_to_speed_bearing`
+- [x] 1.2 `engine.py`: param `motion_field`, vector por celda (B), growth/decay (D),
+      blend NWP confianza (E), `intensity_trend`, `model_agreement`
+- [x] 1.3 `schemas.py` + `api.js`: `intensity_trend`, `model_agreement` (MISMO COMMIT)
+- [x] 1.4 `scheduler.py`: `motion_field_ema`, `last_eta`, EMA del campo, logs `ETA[...]Δ...`
+- [x] 1.5 `main.py`: usa EMA en `/radar`, endpoint `GET /eta-stability`, docstring 24 pasos
+- [x] 1.6 `predict.py`: `_DEFAULT_STEPS_MIN=range(5,121,5)` (24 pasos), `frames_recent`,
+      decay alpha por paso cuando `intensity_trend < 0`
+- [x] 1.7 `storage.py`: `get_eta_stability` (jitter, method_changes, series, etc.)
+- [x] 1.8 `CellMap.jsx`: `maxArrows=15`, umbral `span<0.05`, `spacing=max(0.05, span/5)`
+- [x] 1.9 `TimeSlider.jsx`: play sin cortar arrastre, `PLAY_INTERVAL_MS=350`,
+      marcas cada 30 min
+- [x] 1.10 `api.js`: `getEtaStability(hours=6)` + typedef
+- [x] 1.11 `AdminView.jsx`: panel "Estabilidad de la ETA" con sparkline SVG, jitter
+      colorizado (verde/ámbar/rojo), filtro por horas
+- [x] **Tests:** 117/117 ✅ (105 anteriores + 12 nuevos de Fase 1)
+- [x] **Lint:** 0 warnings ✅
+- [x] **Build:** ✅
+
+### Fase 2 — Blend NWP real + upgrades Open-Meteo
+
+Estado: **COMPLETADA** ✅ (14-jun-2026)
+
+Checklist:
+- [x] 2.1 `openmeteo.py`:
+      - `fetch_wind_at(client, lat, lon, level=700)` generalizado — cache incluye `level` en clave
+      - `fetch_wind_700_at` como alias de compatibilidad
+      - `sample_wind_grid` actualizado a malla 6×6 (antes 4×4) y acepta `level`
+      - `sample_precip_grid(client, bounds, nx=6, ny=6)` — precipitación mm/h en malla,
+        cache por (lat 0.1°, lon 0.1°, hora UTC)
+      - `fetch_minutely_15(client, lat, lon, n_steps=8)` — precipitación cada 15 min
+      - `fetch_ensemble(client, lat, lon)` — fracción de miembros ICON-EPS con precip > 0.1 mm,
+        cache por (lat 0.1°, lon 0.1°, hora UTC)
+      - Caches separados: `_wind_cache`, `_precip_cache`, `_ensemble_cache`
+- [x] 2.2 `predict.py`:
+      - `precip_to_dbz(precip_mmh) -> float` — Marshall-Palmer (Z=200·R^1.6, retorna -31.5 para R≤0)
+      - `_precip_grid_to_dbz_field(precip_grid, H, W, bounds)` — IDW de precip→dBZ a H×W
+      - `_dbz_to_rgba(dbz_field, ref_image)` — convierte dBZ a RGBA (alpha=0 bajo umbral)
+      - `blend_radar_nwp(advected_rgba, nwp_dbz, minutes, max_minutes=120)` — blend seamless
+        INCA-like: alpha_radar decrece 1.0→0.3 en 0→120 min; NWP rellena lo que el radar pierde
+      - `build_prediction` acepta `frames_recent` (multi-frame) y `precip_grid` (Fase 2);
+        precomputa campo NWP una vez por call, aplica blend en cada paso
+- [x] 2.3 `engine.py`:
+      - Nuevo param `ensemble_prob: float | None = None` en `estimate_arrival`
+      - Si `ensemble_prob` disponible se usa en lugar de `precipitation_probability` del horario
+      - Expone `model_agreement = ensemble_prob` (o `model_prob` del horario)
+- [x] 2.4 `scheduler.py` + `main.py`:
+      - `scheduler.py`: llama `fetch_ensemble(fc, lat, lon)` por ciclo por punto,
+        pasa como `ens_prob` a `estimate_arrival`; fallo silencioso
+      - `main.py`: endpoint `/radar` llama `fetch_ensemble` y pasa al engine;
+        endpoint `/prediction` llama `sample_precip_grid`, pasa `precip_grid` a `build_prediction`
+- [x] **Fix de tests:** timestamps del test de `get_eta_stability` eran fechas hardcodeadas
+      del 13-jun; corregidos a offsets relativos (`datetime.now(utc) - timedelta(minutes=N)`)
+- [x] **Tests:** 117/117 ✅ | **Lint:** 0 warnings ✅ | **Build:** ✅
+
+### Pendiente — Notificaciones push / PWA
+
+Feature diferida para sesión futura. Objetivo: avisar al usuario cuando se
+detecta ETA < 30 min en algún punto monitoreado. Requiere:
+- Service Worker + cache offline (PWA)
+- VAPID keys + endpoint de suscripción en el backend
+- UI para activar/desactivar notificaciones por punto
+- Push desde el scheduler cuando `eta_minutes <= 30` y `confidence >= 0.5`
+
+---
+
+### Fase 3 — Doppler `_VR_`
+
+Estado: **BLOQUEADA — VR no disponible en API pública** (investigado 14-jun-2026)
+
+#### Hallazgos de la investigación
+
+**Coordenadas del radar (resuelto):**
+La posición del radar se extrae del campo `<lookAt>` del `doc.kml` que acompaña
+cada frame ZH. Es constante en todos los frames; se añadió a `config.py`:
+```python
+RADAR_SITE_LAT = 20.67555618286133   # Av. Vallarta 2602, Guadalajara
+RADAR_SITE_LON = -103.3858337402344
+```
+
+**`_VR_` no disponible en la API pública (bloqueante):**
+Se probó el endpoint `api_radar.php?tipo_solicitud=kmz_act` con `radar=_VR_`,
+`_ZDR_`, `_KDP_`, `_PHIDP_` y `_RHOHV_`. Todos devuelven `"error"`.
+La API pública del IAM solo expone el producto `_ZH_` (reflectividad horizontal).
+El producto de velocidad Doppler no está accesible sin credenciales adicionales.
+
+#### Investigación SMN/CONAGUA (opción 2) — 14-jun-2026
+
+Se investigó el visor de radares del SMN en busca de una ruta alternativa para
+obtener datos VEL del mismo radar IAM-UdG.
+
+**Hallazgos:**
+- El SMN tiene páginas dedicadas al radar UDG con producto velocidad:
+  `https://smn.conagua.gob.mx/tools/GUI/visor_radares_v2/radares/udg/udg_vel.php`
+- URL de imágenes: `…/ecos/udg/velocidad/udg_vel_YYYYMMDD_HHMMSS.png`
+- Bounds del VEL: N=21.759372, S=19.591604, W=-104.537519, E=-102.234149
+- La descarga funciona con httpx + headers de Referer/User-Agent correctos
+- Imagen descargada: PNG 600×600 px, 16KB, **colormap bipolar confirmado**
+  (cian = acercándose, rosa/magenta = alejándose)
+- **CRÍTICO: el SMN sirve datos congelados de 2023-02-07**. La página
+  devuelve siempre `udg_vel_20230207_131035.png`. El feed UDG→SMN está
+  inactivo; no es tiempo real.
+
+**Fixture guardado:** `backend/tests/fixtures/frame_vel_smn.png` — muestra
+el colormap bipolar y es útil para calibración si se obtiene acceso real.
+
+**Conclusión de la opción 2:**
+La ruta SMN no da datos en tiempo real para el radar IAM-UdG. El feed está
+congelado y el SMN no lo actualiza.
+
+#### Opciones para desbloquear
+
+1. **Contactar al IAM directamente** — pedir acceso al feed VR o al API
+   privado. Contacto: (33) 36 16 49 37 | iam@cucei.udg.mx
+2. **Descartarlo (recomendado)** — el optical flow Farneback multi-frame
+   (Fases 1–2) ya aproxima el campo de velocidad 2D razonablemente bien.
+   La ganancia marginal de VR real vs. el OFM actual no justifica la
+   complejidad adicional dado que la fuente no está disponible.
+
+#### Estado práctico
+
+Las coordenadas del radar se añadieron a `config.py`. El fixture VEL se guarda
+para referencia futura.
+
+**Fase 3: CANCELADA / pendiente** — no procede sin feed VR en tiempo real.
+Reactivar solo si el IAM proporciona acceso directo: (33) 36 16 49 37.

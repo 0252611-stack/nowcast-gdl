@@ -1,12 +1,14 @@
 """Advección semi-Lagrangiana del campo de eco para nowcasting temporal.
 
-Algoritmo: persistencia Lagrangiana mejorada con corrección de viento 700 hPa.
-- Motor primario: flujo óptico denso (Farneback) entre los dos frames más recientes.
-- Corrección: malla 4×4 de viento 700 hPa interpolada con IDW; pesa más donde
-  no hay eco (zona hacia donde avanzará la tormenta).
+Algoritmo: persistencia Lagrangiana mejorada con corrección de viento + blend NWP.
+- Motor primario: flujo óptico denso multi-frame (Farneback, EMA temporal).
+- Corrección: malla 6×6 de viento de capa interpolada con IDW.
 - Advección: backward mapping con cv2.remap (semi-Lagrangiano).
+- Blend NWP: malla de precipitación Open-Meteo → dBZ (Marshall-Palmer) mezclada
+  con el campo advectado según horizonte (radar domina 0-60 min, NWP 90-120 min).
 
 Referencia: Lagrangian persistence / Pulkkinen et al. (pysteps, GMD 2019).
+           INCA blend seamless (Haiden et al. 2011).
 """
 
 from __future__ import annotations
@@ -22,11 +24,16 @@ from app.processing.motion import (
     dense_motion_field,
     find_context_echoes,
     find_echo_contours,
+    multi_frame_motion_field,
 )
 
 _KM_PER_DEG_LAT = 111.32
-_DEFAULT_STEPS_MIN = [15, 30, 45, 60, 75, 90, 105, 120]
+_DEFAULT_STEPS_MIN = list(range(5, 121, 5))   # 24 pasos: +5…+120 min
 _MAX_TRAJECTORIES = 10
+
+
+def _clamp(x: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, x))
 
 
 # ---------------------------------------------------------------------------
@@ -171,6 +178,119 @@ def advect_image(
 # Función principal
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Blend NWP (Fase 2): Marshall-Palmer + compositing seamless por horizonte
+# ---------------------------------------------------------------------------
+
+def precip_to_dbz(precip_mmh: float) -> float:
+    """Convierte precipitación (mm/h) a reflectividad (dBZ) via Marshall-Palmer.
+
+    Z = 200 * R^1.6  →  dBZ = 10 * log10(Z)
+    Devuelve -31.5 (ruido) para R≤0.
+    """
+    if precip_mmh <= 0.0:
+        return -31.5
+    z = 200.0 * (precip_mmh ** 1.6)
+    return max(-31.5, min(78.0, 10.0 * math.log10(max(z, 1e-6))))
+
+
+def _precip_grid_to_dbz_field(
+    precip_grid: list[dict],
+    H: int,
+    W: int,
+    bounds: dict[str, float],
+) -> np.ndarray:
+    """Interpola la malla de precipitación a resolución H×W (IDW) en dBZ.
+
+    Cada celda de la malla tiene {"lat", "lon", "precip_mm"}. Devuelve H×W
+    con el campo dBZ NWP interpolado (float32).
+    """
+    if not precip_grid:
+        return np.full((H, W), -31.5, dtype=np.float32)
+
+    north, south, east, west = bounds["north"], bounds["south"], bounds["east"], bounds["west"]
+
+    dbzs_g = np.array([precip_to_dbz(p["precip_mm"]) for p in precip_grid], dtype=np.float32)
+    lats_g = np.array([p["lat"] for p in precip_grid], dtype=np.float32)
+    lons_g = np.array([p["lon"] for p in precip_grid], dtype=np.float32)
+    xs_g = (lons_g - west) / (east - west) * W
+    ys_g = (north - lats_g) / (north - south) * H
+
+    Y_px, X_px = np.mgrid[0:H, 0:W]
+    dx = X_px[:, :, np.newaxis] - xs_g[np.newaxis, np.newaxis, :]
+    dy = Y_px[:, :, np.newaxis] - ys_g[np.newaxis, np.newaxis, :]
+    dist_sq = dx**2 + dy**2 + 1.0
+    w = 1.0 / dist_sq
+    w = w / w.sum(axis=2, keepdims=True)
+    return (w * dbzs_g[np.newaxis, np.newaxis, :]).sum(axis=2).astype(np.float32)
+
+
+def _dbz_to_rgba(dbz_field: np.ndarray, ref_image: np.ndarray) -> np.ndarray:
+    """Convierte un campo dBZ H×W a RGBA usando el rango de la imagen de referencia.
+
+    Usa la imagen de referencia para derivar el rango de color (percentil 5-95
+    de píxeles con eco), luego mapea dBZ → luminancia gris con alpha proporcional
+    a la intensidad. Solo pixeles con dBZ > umbral de lluvia tienen alpha > 0.
+    """
+    from app import config
+    H, W = dbz_field.shape
+
+    # Normalizar dBZ al rango [0, 255]
+    dbz_min, dbz_max = -31.5, 78.0
+    norm = np.clip((dbz_field - dbz_min) / (dbz_max - dbz_min), 0.0, 1.0)
+
+    # Umbral: alpha=0 si dBZ < DBZ_RAIN_THRESHOLD; alpha proporcional a intensidad
+    alpha = np.where(
+        dbz_field >= config.DBZ_RAIN_THRESHOLD,
+        (norm * 200).astype(np.uint8),
+        0,
+    ).astype(np.uint8)
+
+    # Color: degradé amarillo-naranja-rojo para lluvia
+    r = np.clip(norm * 255, 0, 255).astype(np.uint8)
+    g = np.clip((1 - norm) * 200, 0, 255).astype(np.uint8)
+    b = np.zeros((H, W), dtype=np.uint8)
+
+    return np.stack([r, g, b, alpha], axis=2)
+
+
+def blend_radar_nwp(
+    advected_rgba: np.ndarray,
+    nwp_dbz: np.ndarray,
+    minutes: float,
+    max_minutes: float = 120.0,
+) -> np.ndarray:
+    """Mezcla seamless del frame advectado (radar) con el campo NWP (dBZ).
+
+    Peso radar α decrece con el horizonte (INCA-like):
+      α = clamp(1 - minutes/max_minutes * 0.7 + 0.3, 0.3, 1.0)
+    Esto hace que radar domine en 0-60 min y NWP aporte en 90-120 min.
+
+    advected_rgba: H×W×4 uint8 (canal alpha = presencia de eco)
+    nwp_dbz: H×W float32 (dBZ del modelo NWP interpolado)
+    Devuelve: H×W×4 uint8 mezclado.
+    """
+    alpha_radar = 1.0 - min(0.7, (minutes / max(max_minutes, 1.0)) * 0.7)
+    alpha_radar = _clamp(alpha_radar + 0.3, 0.3, 1.0)
+    alpha_nwp = 1.0 - alpha_radar
+
+    H, W = nwp_dbz.shape
+    nwp_rgba = _dbz_to_rgba(nwp_dbz, advected_rgba)
+
+    # Blend lineal en el canal alpha (presencia de eco)
+    radar_alpha = advected_rgba[:, :, 3].astype(np.float32)
+    nwp_alpha   = nwp_rgba[:, :, 3].astype(np.float32)
+    blended_alpha = np.clip(alpha_radar * radar_alpha + alpha_nwp * nwp_alpha, 0, 255).astype(np.uint8)
+
+    # Para los canales RGB: usar radar donde hay eco de radar, NWP donde no
+    has_radar = radar_alpha > 0
+    r = np.where(has_radar, advected_rgba[:, :, 0], nwp_rgba[:, :, 0]).astype(np.uint8)
+    g = np.where(has_radar, advected_rgba[:, :, 1], nwp_rgba[:, :, 1]).astype(np.uint8)
+    b = np.where(has_radar, advected_rgba[:, :, 2], nwp_rgba[:, :, 2]).astype(np.uint8)
+
+    return np.stack([r, g, b, blended_alpha], axis=2)
+
+
 def build_prediction(
     frame_older: bytes,
     frame_newer: bytes,
@@ -178,8 +298,22 @@ def build_prediction(
     bounds: dict[str, float],
     wind_grid: list[dict],
     steps_min: list[int] | None = None,
+    frames_recent: list[tuple[bytes, "datetime"]] | None = None,
+    intensity_trend: float = 0.0,
+    precip_grid: list[dict] | None = None,
 ) -> dict:
     """Construye la predicción advectiva del campo de eco.
+
+    `frames_recent` (opcional): lista (png_bytes, datetime) más reciente primero.
+    Si se provee, usa multi_frame_motion_field para mayor estabilidad temporal en
+    vez del único par frame_older/frame_newer. Si no, cae al par clásico.
+
+    `intensity_trend` (opcional, [-1,1]): tendencia de área del eco. Se usa para
+    atenuar (decay) gradualmente los ecos que se disipan en los pasos largos.
+
+    `precip_grid` (opcional): lista de {"lat", "lon", "precip_mm"} de Open-Meteo.
+    Si se provee, mezcla el campo advectado con el campo NWP (Marshall-Palmer→dBZ)
+    usando un blend seamless por horizonte (INCA-like).
 
     Devuelve::
         {
@@ -203,8 +337,13 @@ def build_prediction(
     H, W = arr_newer.shape[:2]
     north, south, east, west = bounds["north"], bounds["south"], bounds["east"], bounds["west"]
 
-    # Campo denso de optical flow (grados/min) — None si sin eco suficiente
-    radar_field = dense_motion_field(frame_older, frame_newer, interval_seconds, bounds)
+    # Campo denso de optical flow (grados/min): multi-frame si se pasan frames_recent,
+    # si no, par clásico (retrocompatibilidad).
+    radar_field: np.ndarray | None = None
+    if frames_recent is not None and len(frames_recent) >= 2:
+        radar_field = multi_frame_motion_field(frames_recent, bounds)
+    if radar_field is None:
+        radar_field = dense_motion_field(frame_older, frame_newer, interval_seconds, bounds)
 
     if radar_field is None:
         method = "static_persistence"
@@ -214,6 +353,11 @@ def build_prediction(
 
     # Campo combinado radar + viento
     motion = blend_motion_field(radar_field, alpha_newer, wind_grid, bounds)
+
+    # Campo dBZ del modelo NWP (pre-interpolado, reutilizado en todos los pasos)
+    nwp_dbz: np.ndarray | None = None
+    if precip_grid:
+        nwp_dbz = _precip_grid_to_dbz_field(precip_grid, H, W, bounds)
 
     # ------------------------------------------------------------------
     # Trayectorias: proyectar centroide de cada eco fuerte en el tiempo
@@ -237,13 +381,31 @@ def build_prediction(
         trajectories.append(traj)
 
     # ------------------------------------------------------------------
-    # Advectar el frame y calcular contornos por paso
+    # Advectar el frame y calcular contornos por paso.
+    # D: aplicar factor de decay al canal alpha para atenuar ecos que se
+    # disipan (trend < 0). Nunca amplifica artificialmente (min_decay=0.6).
     # ------------------------------------------------------------------
     frames_png: list[bytes] = []
     steps_data: list[dict] = []
+    max_minutes = max(steps_min) if steps_min else 120
 
     for minutes in steps_min:
         adv_img = advect_image(arr_newer, motion, minutes, bounds)
+
+        adv_arr = np.array(adv_img)
+
+        # D: decay del alpha cuando el eco se disipa (trend < 0)
+        if intensity_trend < 0:
+            decay = _clamp(1 + 0.5 * intensity_trend * (minutes / max_minutes), 0.6, 1.0)
+            adv_arr[:, :, 3] = np.clip(
+                adv_arr[:, :, 3].astype(np.float32) * decay, 0, 255
+            ).astype(np.uint8)
+
+        # Fase 2: blend seamless radar + NWP si hay campo de precipitación
+        if nwp_dbz is not None:
+            adv_arr = blend_radar_nwp(adv_arr, nwp_dbz, float(minutes), float(max_minutes))
+
+        adv_img = Image.fromarray(adv_arr, "RGBA")
         contours = find_echo_contours(adv_img, bounds)
 
         buf = io.BytesIO()

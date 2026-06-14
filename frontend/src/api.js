@@ -42,6 +42,7 @@ export async function getForecast(pointId) {
  *   bearing_cell_to_point_deg: number|null,
  *   wind_echo_bearing_deg: number|null, wind_echo_speed_kmh: number|null,
  *   trajectory_wind: Array<{lat: number, lon: number, toward_deg: number, speed_kmh: number}>|null,
+ *   intensity_trend: number|null, model_agreement: number|null,
  *   generated_at: string, method: string }} NowcastResult
  *
  * @typedef {{ lat: number, lon: number, dbz: number, bearing_deg: number, speed_kmh: number }} ContextEcho
@@ -79,6 +80,18 @@ export async function getPrediction() {
  */
 export async function getMetrics() {
   return fetchJson("/metrics");
+}
+
+/**
+ * Estabilidad de la ETA por punto en las últimas `hours` horas.
+ * @param {number} hours
+ * @returns {Promise<Array<{point_id: string, n: number, eta_mean: number|null,
+ *   eta_std: number|null, jitter: number|null, method_changes: number,
+ *   pct_with_eta: number, current_method: string|null, last_eta: number|null,
+ *   series: Array<number|null>}>>}
+ */
+export async function getEtaStability(hours = 6) {
+  return fetchJson(`/eta-stability?hours=${hours}`);
 }
 
 /**
