@@ -220,7 +220,7 @@ function computeMeshCells(ring, vectors) {
   const centerLat = (minLat + maxLat) / 2
 
   // Tamaño de celda fijo en km → grados
-  const CELL_KM  = 2.2
+  const CELL_KM  = 1.2
   const stepLat  = CELL_KM / 111.32
   const stepLon  = CELL_KM / (111.32 * Math.cos(centerLat * Math.PI / 180))
 
@@ -228,7 +228,7 @@ function computeMeshCells(ring, vectors) {
   const nLon = Math.max(3, Math.ceil((maxLon - minLon) / stepLon))
 
   // Si la cota de celdas se supera, escalar el paso uniformemente
-  const MAX_CELLS = 900
+  const MAX_CELLS = 2000
   const scale = nLat * nLon > MAX_CELLS ? Math.sqrt((nLat * nLon) / MAX_CELLS) : 1
   const sLat = stepLat * scale
   const sLon = stepLon * scale
