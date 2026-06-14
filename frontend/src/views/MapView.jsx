@@ -105,7 +105,8 @@ export default function MapView() {
               <span style={{ ...st.dot, background: theme.green }} /> Lloviendo ahora
             </span>
             <span style={st.legendItem}>
-              <span style={{ ...st.dot, background: theme.orange }} /> Eco causante
+              <span style={{ display: "inline-block", width: "20px", height: "3px", background: theme.orange, verticalAlign: "middle", marginRight: "2px" }} />
+              Contorno del eco causante
             </span>
             <span style={st.legendItem}>
               <svg width="14" height="14" viewBox="0 0 14 14" style={{ flexShrink: 0 }}>

@@ -12,10 +12,10 @@
  *   radarBounds    — {north, south, east, west} del frame actual
  */
 
-import { useEffect } from "react"
+import { useEffect, Fragment } from "react"
 import {
   MapContainer, TileLayer, ImageOverlay,
-  Marker, Polygon, Polyline, CircleMarker, Tooltip, useMap,
+  Marker, Polygon, Polyline, Tooltip, useMap,
 } from "react-leaflet"
 import L from "leaflet"
 import "leaflet/dist/leaflet.css"
@@ -100,6 +100,65 @@ function pointIcon(raining) {
 // Utilidades
 // ---------------------------------------------------------------------------
 
+/** Ray-casting: devuelve true si [lat, lon] está dentro del polígono `ring`. */
+function pointInPolygon([lat, lon], ring) {
+  let inside = false
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const [yi, xi] = ring[i]
+    const [yj, xj] = ring[j]
+    if ((yi > lat) !== (yj > lat) && lon < (xj - xi) * (lat - yi) / (yj - yi) + xi)
+      inside = !inside
+  }
+  return inside
+}
+
+/** Centroide promedio de un anillo de polígono. */
+function polygonCentroid(ring) {
+  const n = ring.length
+  return [ring.reduce((s, p) => s + p[0], 0) / n, ring.reduce((s, p) => s + p[1], 0) / n]
+}
+
+/**
+ * Devuelve hasta `maxArrows` posiciones [lat, lon] interiores al polígono `ring`
+ * usando una grilla adaptativa al tamaño del eco. Siempre incluye el centroide.
+ */
+function echoArrowPositions(ring, maxArrows = 7) {
+  const centroid = polygonCentroid(ring)
+  const lats = ring.map(p => p[0])
+  const lons = ring.map(p => p[1])
+  const minLat = Math.min(...lats), maxLat = Math.max(...lats)
+  const minLon = Math.min(...lons), maxLon = Math.max(...lons)
+  const span = Math.max(maxLat - minLat, maxLon - minLon)
+
+  // Ecos muy pequeños: solo el centroide
+  if (span < 0.12) return [centroid]
+
+  // Espaciado adaptativo para obtener ~maxArrows puntos interiores
+  const spacing = Math.max(0.12, span / 2.5)
+  const pts = [centroid]
+
+  outer:
+  for (let lat = minLat + spacing / 2; lat <= maxLat; lat += spacing) {
+    for (let lon = minLon + spacing / 2; lon <= maxLon; lon += spacing) {
+      if (pts.length >= maxArrows) break outer
+      const pt = [lat, lon]
+      const distToCentroid = Math.hypot(lat - centroid[0], lon - centroid[1])
+      if (distToCentroid > spacing * 0.4 && pointInPolygon(pt, ring)) pts.push(pt)
+    }
+  }
+  return pts
+}
+
+/** Flecha pequeña naranja — dirección de movimiento dentro del perímetro de un eco */
+function echoMotionArrowIcon(bearing) {
+  const svg = `<svg width="14" height="14" viewBox="0 0 14 14" xmlns="http://www.w3.org/2000/svg">
+    <g transform="rotate(${bearing},7,7)">
+      <polygon points="7,1 11,12 7,9.5 3,12" fill="${theme.orange}" stroke="#FFFFFF" stroke-width="1" stroke-linejoin="round"/>
+    </g>
+  </svg>`
+  return L.divIcon({ className: "", html: svg, iconSize: [14, 14], iconAnchor: [7, 7] })
+}
+
 /** Color de trayectoria según consistencia del viento a lo largo del camino */
 function trajectoryColor(nw) {
   if (!nw.trajectory_wind?.length) return theme.orange
@@ -180,15 +239,22 @@ export default function CellMap({
   const windFallbackBearing = Object.values(nowcasts)
     .find(n => n?.wind_echo_bearing_deg != null)?.wind_echo_bearing_deg ?? null
 
-  // Mostramos flechas si hay ecos Y tenemos alguna fuente de dirección
-  // (optical flow con velocidad > 1 km/h, o viento 700 hPa como fallback)
+  // Dirección global del campo (optical flow o viento 700 hPa como fallback)
   const hasDirection = contextEchoes.some(ce => ce.speed_kmh > 1) || windFallbackBearing != null
+  const globalBearing = contextEchoes.find(ce => ce.speed_kmh > 1)?.bearing_deg ?? windFallbackBearing
+
+  // Flechas de campo sobre contextEchoes (grilla de flechas grandes)
   const arrowPositions = (!compact && contextEchoes.length > 0 && hasDirection)
     ? selectArrowPositions(contextEchoes, 10, 25).map(ce => {
         const useWind = ce.speed_kmh <= 1 && windFallbackBearing != null
         return { ...ce, bearing_deg: useWind ? windFallbackBearing : ce.bearing_deg, _src: useWind ? "wind" : "flow" }
       })
     : []
+
+  // Posiciones de los ecos causantes (para colorear su contorno en naranja)
+  const causantePositions = Object.values(nowcasts)
+    .filter(nw => nw?.cell_lat != null && nw?.cell_lon != null)
+    .map(nw => [nw.cell_lat, nw.cell_lon])
 
   const displayPoints = focusPoint
     ? points.filter(p => p.id === focusPoint.id)
@@ -228,14 +294,28 @@ export default function CellMap({
         <TileLayer url={rvTemplate} opacity={0.6} attribution="RainViewer" />
       )}
 
-      {/* Contornos de eco — línea slate alrededor de cada masa de precipitación */}
-      {!compact && echoContours.map((ring, i) => (
-        <Polygon
-          key={`ec-${i}`}
-          positions={ring}
-          pathOptions={{ color: theme.text, weight: 1.5, opacity: 0.75, fill: false }}
-        />
-      ))}
+      {/* Contornos de eco — naranja+grueso para el causante, slate+fino para los demás;
+          flechitas interiores apuntando en la dirección del campo */}
+      {!compact && echoContours.map((ring, i) => {
+        const isCausante = causantePositions.some(pos => pointInPolygon(pos, ring))
+        const arrowPts = globalBearing != null ? echoArrowPositions(ring) : []
+        return (
+          <Fragment key={`ec-${i}`}>
+            <Polygon
+              positions={ring}
+              pathOptions={{
+                color:   isCausante ? theme.orange : theme.text,
+                weight:  isCausante ? 3 : 1.5,
+                opacity: 0.85,
+                fill:    false,
+              }}
+            />
+            {arrowPts.map((pt, j) => (
+              <Marker key={`ea-${i}-${j}`} position={pt} icon={echoMotionArrowIcon(globalBearing)} />
+            ))}
+          </Fragment>
+        )
+      })}
 
       {/* Flechas de dirección del campo — posicionadas sobre los ecos más fuertes */}
       {arrowPositions.map((ce, i) => (
@@ -288,12 +368,8 @@ export default function CellMap({
               </Marker>
             ))}
 
-            {/* Círculo del eco causante */}
-            <CircleMarker
-              center={echoPos}
-              radius={8}
-              pathOptions={{ color: theme.orange, fillColor: theme.orange, fillOpacity: 0.5, weight: 2 }}
-            >
+            {/* Flecha naranja sólida — optical flow (tooltip de eco causante) */}
+            <Marker position={echoPos} icon={flowArrowIcon(flowBearing)}>
               {!compact && (
                 <Tooltip>
                   <div style={{ fontSize: "12px", lineHeight: "1.6" }}>
@@ -306,10 +382,7 @@ export default function CellMap({
                   </div>
                 </Tooltip>
               )}
-            </CircleMarker>
-
-            {/* Flecha naranja sólida — optical flow */}
-            <Marker position={echoPos} icon={flowArrowIcon(flowBearing)} />
+            </Marker>
 
             {/* Flecha azul hueca — viento 700 hPa en el eco */}
             {nw.wind_echo_bearing_deg != null && (
