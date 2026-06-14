@@ -8,9 +8,10 @@ from zoneinfo import ZoneInfo
 # Define aquí los puntos reales del AMG. Los IDs deben ser únicos y estables
 # (se usan como clave en la BD y en los endpoints REST).
 POINTS: list[dict] = [
-    {"id": "up_gdl",       "name": "Universidad Panamericana", "lat": 20.68263,   "lon": -103.44197},
-    {"id": "puerta_lomas", "name": "Puerta Las Lomas",         "lat": 20.7054792, "lon": -103.4363111},
-    {"id": "club_atlas",   "name": "Club Atlas Colomos",       "lat": 20.7143976, "lon": -103.4025069},
+    {"id": "up_gdl",         "name": "Universidad Panamericana", "lat": 20.68263,   "lon": -103.44197},
+    {"id": "puerta_lomas",   "name": "Puerta Las Lomas",         "lat": 20.7054792, "lon": -103.4363111},
+    {"id": "club_atlas",     "name": "Club Atlas Colomos",       "lat": 20.7143976, "lon": -103.4025069},
+    {"id": "hogar_cabanas",  "name": "Hogar Cabañas",            "lat": 20.650890,  "lon": -103.39572},
 ]
 
 # --- Sitio del radar IAM (fuente: <lookAt> del doc.kml — constante en todos los frames) ---

@@ -191,8 +191,9 @@ def verify_predictions(
     conn: sqlite3.Connection,
     now_utc: datetime,
     dbz_threshold: float = 18.0,
-) -> int:
-    """Verifica predicciones cuyo horizonte ya expiró. Devuelve nº verificadas."""
+) -> dict:
+    """Verifica predicciones cuyo horizonte ya expiró.
+    Devuelve dict con count, hit, false_alarm, miss, correct_negative."""
     rows = conn.execute(
         """SELECT id, point_id, generated_at_utc, predicted_rain,
                   target_time_utc, predicted_arrival_utc
@@ -202,11 +203,13 @@ def verify_predictions(
         (now_utc.isoformat(),),
     ).fetchall()
 
+    _empty: dict = {"count": 0, "hit": 0, "false_alarm": 0, "miss": 0, "correct_negative": 0}
     if not rows:
-        return 0
+        return _empty
 
     verified_at = now_utc.isoformat()
     count = 0
+    tally: dict = {"hit": 0, "false_alarm": 0, "miss": 0, "correct_negative": 0}
 
     for (row_id, point_id, gen_utc_str, predicted_rain,
          target_utc_str, arr_utc_str) in rows:
@@ -250,9 +253,10 @@ def verify_predictions(
             (verified_at, int(observed_raining), observed_arrival, lead_error, outcome, row_id),
         )
         count += 1
+        tally[outcome] = tally.get(outcome, 0) + 1
 
     conn.commit()
-    return count
+    return {"count": count, **tally}
 
 
 def get_skill_metrics(conn: sqlite3.Connection) -> dict:
@@ -393,10 +397,8 @@ def purge_old_predictions(conn: sqlite3.Connection, retention_hours: int = 168) 
 # ---------------------------------------------------------------------------
 
 def seed_points(conn: sqlite3.Connection, points: list[dict]) -> None:
-    """Inserta config.POINTS en monitored_points solo si la tabla está vacía."""
-    count = conn.execute("SELECT COUNT(*) FROM monitored_points").fetchone()[0]
-    if count > 0:
-        return
+    """Inserta puntos de config.POINTS que no existan aún (INSERT OR IGNORE).
+    Puntos ya en BD (editados por el admin) no se sobreescriben."""
     conn.executemany(
         "INSERT OR IGNORE INTO monitored_points (id, name, lat, lon) VALUES (?, ?, ?, ?)",
         [(p["id"], p["name"], p["lat"], p["lon"]) for p in points],

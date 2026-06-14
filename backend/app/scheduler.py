@@ -6,6 +6,7 @@ import asyncio
 import io
 import logging
 import sqlite3
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -66,6 +67,7 @@ async def run_radar_loop(conn: sqlite3.Connection, state: RadarState) -> None:
     extrae dBZ para cada punto de config.POINTS y persiste en SQLite."""
     while True:
         try:
+            cycle_start = time.monotonic()
             async with httpx.AsyncClient(
                 headers={"User-Agent": config.USER_AGENT}, timeout=10
             ) as client:
@@ -149,6 +151,12 @@ async def run_radar_loop(conn: sqlite3.Connection, state: RadarState) -> None:
                         prev_eta, prev_method = state.last_eta.get(pid, (None, None))
                         curr_eta = result.eta_minutes
                         curr_method = result.method
+                        # Advertir si el método cambió (señal de inestabilidad de fuente)
+                        if prev_method is not None and curr_method != prev_method:
+                            log.warning(
+                                "ETA[%s] cambio de método: %s → %s",
+                                pid, prev_method, curr_method,
+                            )
                         if prev_eta is not None and curr_eta is not None:
                             delta = curr_eta - prev_eta
                             log.info(
@@ -170,9 +178,13 @@ async def run_radar_loop(conn: sqlite3.Connection, state: RadarState) -> None:
                         log.warning("Error emitiendo predicción para %s: %s", pt["id"], exc)
 
             # Verificar predicciones cuyo horizonte ya expiró
-            verified = verify_predictions(conn, now_utc)
-            if verified:
-                log.info("Verificadas %d predicciones.", verified)
+            v = verify_predictions(conn, now_utc)
+            if v["count"]:
+                log.info(
+                    "Verificadas %d predicciones: %d aciertos, %d falsas alarmas, "
+                    "%d pérdidas, %d neg. correctas.",
+                    v["count"], v["hit"], v["false_alarm"], v["miss"], v["correct_negative"],
+                )
 
             purge_old_predictions(conn)
 
@@ -180,7 +192,10 @@ async def run_radar_loop(conn: sqlite3.Connection, state: RadarState) -> None:
             state.available = True
             state.last_kmz_url = kmz_url
             state.last_bounds = bounds
-            log.info("Frame radar OK: %s (age %.0f s)", kmz_url.rsplit("/", 1)[-1], frame_age)
+            log.info(
+                "Frame radar OK: %s (age %.0f s) — ciclo %.1f s",
+                kmz_url.rsplit("/", 1)[-1], frame_age, time.monotonic() - cycle_start,
+            )
 
         except RadarUnavailable as exc:
             # "same frame" es skip normal, no un fallo

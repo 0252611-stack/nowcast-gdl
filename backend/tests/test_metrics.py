@@ -120,8 +120,9 @@ def test_save_prediction_no_arrival_when_no_eta(db):
 def test_verify_hit(db):
     save_prediction(db, _result(eta_minutes=30))   # predicted_rain=True
     save_reading(db, _rain_reading())              # observed rain at T_RAIN (in window)
-    n = verify_predictions(db, T_VERIFY)
-    assert n == 1
+    v = verify_predictions(db, T_VERIFY)
+    assert v["count"] == 1
+    assert v["hit"] == 1
     row = db.execute("SELECT outcome FROM nowcast_predictions").fetchone()
     assert row[0] == "hit"
 
@@ -129,32 +130,35 @@ def test_verify_hit(db):
 def test_verify_false_alarm(db):
     save_prediction(db, _result(eta_minutes=30))   # predicted rain
     # no reading → no observed rain
-    n = verify_predictions(db, T_VERIFY)
-    assert n == 1
+    v = verify_predictions(db, T_VERIFY)
+    assert v["count"] == 1
+    assert v["false_alarm"] == 1
     assert db.execute("SELECT outcome FROM nowcast_predictions").fetchone()[0] == "false_alarm"
 
 
 def test_verify_miss(db):
     save_prediction(db, _result(eta_minutes=None, method="no_approaching_cell"))  # predicted_rain=False
     save_reading(db, _rain_reading())              # but it rained
-    n = verify_predictions(db, T_VERIFY)
-    assert n == 1
+    v = verify_predictions(db, T_VERIFY)
+    assert v["count"] == 1
+    assert v["miss"] == 1
     assert db.execute("SELECT outcome FROM nowcast_predictions").fetchone()[0] == "miss"
 
 
 def test_verify_correct_negative(db):
     save_prediction(db, _result(eta_minutes=None))  # predicted_rain=False
     # no rain observed
-    n = verify_predictions(db, T_VERIFY)
-    assert n == 1
+    v = verify_predictions(db, T_VERIFY)
+    assert v["count"] == 1
+    assert v["correct_negative"] == 1
     assert db.execute("SELECT outcome FROM nowcast_predictions").fetchone()[0] == "correct_negative"
 
 
 def test_verify_skips_future_predictions(db):
     t_future_pred = T_VERIFY + timedelta(minutes=10)  # generated AFTER verify time
     save_prediction(db, _result(eta_minutes=30, generated_at=t_future_pred))
-    n = verify_predictions(db, T_VERIFY)
-    assert n == 0
+    v = verify_predictions(db, T_VERIFY)
+    assert v["count"] == 0
 
 
 def test_verify_ignores_rain_outside_window(db):
@@ -180,10 +184,10 @@ def test_verify_does_not_reverify(db):
     """Llamar a verify_predictions dos veces no duplica el trabajo."""
     save_prediction(db, _result(eta_minutes=30))
     save_reading(db, _rain_reading())
-    n1 = verify_predictions(db, T_VERIFY)
-    n2 = verify_predictions(db, T_VERIFY + timedelta(minutes=5))
-    assert n1 == 1
-    assert n2 == 0
+    v1 = verify_predictions(db, T_VERIFY)
+    v2 = verify_predictions(db, T_VERIFY + timedelta(minutes=5))
+    assert v1["count"] == 1
+    assert v2["count"] == 0
 
 
 # ---------------------------------------------------------------------------
