@@ -119,9 +119,35 @@ function polygonCentroid(ring) {
 }
 
 /**
+ * Eco de contexto más cercano al centroide del anillo.
+ * Devuelve null si `contextEchoes` está vacío.
+ */
+function nearestContextEcho(ring, contextEchoes) {
+  if (!contextEchoes.length) return null
+  const [cLat, cLon] = polygonCentroid(ring)
+  let best = null
+  let bestDist = Infinity
+  for (const ce of contextEchoes) {
+    const d = Math.hypot(ce.lat - cLat, ce.lon - cLon)
+    if (d < bestDist) { bestDist = d; best = ce }
+  }
+  return best
+}
+
+/**
+ * Número de flechas interior proporcional al tamaño del eco:
+ * ~1 flecha cada 0.08° de span, mín 1, máx 40.
+ */
+function echoArrowCount(ring) {
+  const lats = ring.map(p => p[0])
+  const lons = ring.map(p => p[1])
+  const span = Math.max(Math.max(...lats) - Math.min(...lats), Math.max(...lons) - Math.min(...lons))
+  return Math.max(1, Math.min(40, Math.round(span / 0.08) * 4))
+}
+
+/**
  * Devuelve hasta `maxArrows` posiciones [lat, lon] interiores al polígono `ring`
  * usando una grilla adaptativa al tamaño del eco. Siempre incluye el centroide.
- * Con maxArrows=15 y espaciado más fino, se muestran varias flechas por eco.
  */
 function echoArrowPositions(ring, maxArrows = 15) {
   const centroid = polygonCentroid(ring)
@@ -134,8 +160,8 @@ function echoArrowPositions(ring, maxArrows = 15) {
   // Ecos muy pequeños: solo el centroide
   if (span < 0.05) return [centroid]
 
-  // Espaciado adaptativo fino: más puntos interiores por eco
-  const spacing = Math.max(0.05, span / 5)
+  // Espaciado proporcional al span para distribuir flechas uniformemente
+  const spacing = Math.max(0.04, span / Math.ceil(Math.sqrt(maxArrows)))
   const pts = [centroid]
 
   outer:
@@ -245,9 +271,8 @@ export default function CellMap({
   const windFallbackBearing = Object.values(nowcasts)
     .find(n => n?.wind_echo_bearing_deg != null)?.wind_echo_bearing_deg ?? null
 
-  // Dirección global del campo (optical flow o viento 700 hPa como fallback)
+  // ¿Hay al menos una señal de dirección disponible?
   const hasDirection = contextEchoes.some(ce => ce.speed_kmh > 1) || windFallbackBearing != null
-  const globalBearing = contextEchoes.find(ce => ce.speed_kmh > 1)?.bearing_deg ?? windFallbackBearing
 
   // Flechas de campo sobre contextEchoes (grilla de flechas grandes)
   const arrowPositions = (!compact && contextEchoes.length > 0 && hasDirection)
@@ -301,10 +326,15 @@ export default function CellMap({
       )}
 
       {/* Contornos de eco — naranja+grueso para el causante, slate+fino para los demás;
-          flechitas interiores apuntando en la dirección del campo */}
+          flechitas interiores con la dirección del eco de contexto más cercano a cada contorno */}
       {showContours && !compact && echoContours.map((ring, i) => {
         const isCausante = causantePositions.some(pos => pointInPolygon(pos, ring))
-        const arrowPts = globalBearing != null ? echoArrowPositions(ring) : []
+        // Dirección local: eco de contexto más cercano al centroide de este contorno.
+        // Si el eco más cercano está casi en calma (<1 km/h), se usa el fallback de viento 700 hPa.
+        const nearEcho = nearestContextEcho(ring, contextEchoes)
+        const ringBearing = (nearEcho?.speed_kmh > 1 ? nearEcho.bearing_deg : null) ?? windFallbackBearing
+        const maxArrows = echoArrowCount(ring)
+        const arrowPts = ringBearing != null ? echoArrowPositions(ring, maxArrows) : []
         return (
           <Fragment key={`ec-${i}`}>
             <Polygon
@@ -317,7 +347,7 @@ export default function CellMap({
               }}
             />
             {arrowPts.map((pt, j) => (
-              <Marker key={`ea-${i}-${j}`} position={pt} icon={echoMotionArrowIcon(globalBearing)} />
+              <Marker key={`ea-${i}-${j}`} position={pt} icon={echoMotionArrowIcon(ringBearing)} />
             ))}
           </Fragment>
         )
