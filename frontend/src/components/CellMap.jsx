@@ -477,24 +477,6 @@ export default function CellMap({
               )
             })}
 
-            {/* Vectores del campo interior — flechas sin rectángulos (toggle /mapa) */}
-            {showFieldVectors && !showMesh && computeMeshCells(ring, vectors).map(({ centerLat, centerLon, vec }, j) => {
-              if (!vec) return null
-              return (
-                <Marker
-                  key={`fv-${i}-${j}`}
-                  position={[centerLat, centerLon]}
-                  icon={meshCellArrowIcon(vec.bearing_deg, vec.speed_kmh)}
-                >
-                  <Tooltip>
-                    <span style={{ fontSize: "11px" }}>
-                      {Math.round(vec.bearing_deg)}° · {vec.speed_kmh.toFixed(0)} km/h
-                    </span>
-                  </Tooltip>
-                </Marker>
-              )
-            })}
-
             {/* Modo normal: grilla del frontend con interpolación al vector más cercano */}
             {!showMesh && arrowPts.map((pt, j) => {
               const vec = hasVectors ? nearestRingVector(pt[0], pt[1], vectors) : null
@@ -505,6 +487,31 @@ export default function CellMap({
           </Fragment>
         )
       })}
+
+      {/* Vectores del campo interior — independiente de showContours.
+          Solo aparecen dentro de los polígonos de eco; computeMeshCells
+          filtra con pointInPolygon, garantizando que ninguna flecha quede
+          fuera de los contornos de los ecos. */}
+      {showFieldVectors && !compact && !showMesh && normalizedContours.map(({ ring, vectors }, i) => (
+        <Fragment key={`fv-${i}`}>
+          {computeMeshCells(ring, vectors).map(({ centerLat, centerLon, vec }, j) => {
+            if (!vec) return null
+            return (
+              <Marker
+                key={`fv-${i}-${j}`}
+                position={[centerLat, centerLon]}
+                icon={meshCellArrowIcon(vec.bearing_deg, vec.speed_kmh)}
+              >
+                <Tooltip>
+                  <span style={{ fontSize: "11px" }}>
+                    {Math.round(vec.bearing_deg)}° · {vec.speed_kmh.toFixed(0)} km/h
+                  </span>
+                </Tooltip>
+              </Marker>
+            )
+          })}
+        </Fragment>
+      ))}
 
       {/* Trayectorias de ecos — polilíneas punteadas de t=0 a t=120 min */}
       {showContours && !compact && trajectories.map((traj, i) => (
