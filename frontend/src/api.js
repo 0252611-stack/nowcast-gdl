@@ -4,7 +4,8 @@
  * NUNCA cambiar schemas.py sin actualizar este archivo en el mismo commit.
  */
 
-const BASE_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
+import { API_BASE } from "./config.js";
+const BASE_URL = API_BASE;
 
 async function fetchJson(path, options = {}) {
   const controller = new AbortController();
@@ -43,6 +44,7 @@ export async function getForecast(pointId) {
  *   wind_echo_bearing_deg: number|null, wind_echo_speed_kmh: number|null,
  *   trajectory_wind: Array<{lat: number, lon: number, toward_deg: number, speed_kmh: number}>|null,
  *   intensity_trend: number|null, model_agreement: number|null,
+ *   conf_radar: number|null, weight_radar: number|null, mult_trend: number|null,
  *   generated_at: string, method: string }} NowcastResult
  *
  * @typedef {{ lat: number, lon: number, dbz: number, bearing_deg: number, speed_kmh: number }} ContextEcho

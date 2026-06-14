@@ -158,6 +158,19 @@ class NowcastResult(BaseModel):
         None, ge=0, le=1,
         description="Probabilidad de precipitación del modelo NWP (Open-Meteo) en la hora de llegada",
     )
+    # Componentes del blend de confianza (B2: confianza interpretable)
+    conf_radar: float | None = Field(
+        None, ge=0, le=1,
+        description="Confianza raw del radar (optical flow + alineación) antes del blend NWP",
+    )
+    weight_radar: float | None = Field(
+        None, ge=0, le=1,
+        description="Peso dado a la señal de radar en el blend final (w): 1=solo radar, 0.3=mínimo",
+    )
+    mult_trend: float | None = Field(
+        None, ge=0,
+        description="Multiplicador de tendencia de área del eco: >1 crece, <1 se disipa",
+    )
     generated_at: datetime
     method: str = Field(
         "unknown",

@@ -226,6 +226,10 @@ export default function CellMap({
   radarImageUrl = null,
   radarBounds   = null,
   trajectories  = [],   // polilíneas de trayectoria de eco [[lat,lon],…]
+  showRadar     = true,
+  showContours  = true,
+  showArrows    = true,
+  showPoints    = true,
 }) {
   const center = focusPoint
     ? [focusPoint.lat, focusPoint.lon]
@@ -282,7 +286,7 @@ export default function CellMap({
       />
 
       {/* Radar IAM como imagen georreferenciada (fondo transparente) */}
-      {leafletBounds && radarImageUrl && (
+      {showRadar && leafletBounds && radarImageUrl && (
         <ImageOverlay
           url={radarImageUrl}
           bounds={leafletBounds}
@@ -292,13 +296,13 @@ export default function CellMap({
       )}
 
       {/* Fallback: capa RainViewer cuando el radar IAM no está disponible */}
-      {!radarImageUrl && rvTemplate && (
+      {showRadar && !radarImageUrl && rvTemplate && (
         <TileLayer url={rvTemplate} opacity={0.6} attribution="RainViewer" />
       )}
 
       {/* Contornos de eco — naranja+grueso para el causante, slate+fino para los demás;
           flechitas interiores apuntando en la dirección del campo */}
-      {!compact && echoContours.map((ring, i) => {
+      {showContours && !compact && echoContours.map((ring, i) => {
         const isCausante = causantePositions.some(pos => pointInPolygon(pos, ring))
         const arrowPts = globalBearing != null ? echoArrowPositions(ring) : []
         return (
@@ -320,7 +324,7 @@ export default function CellMap({
       })}
 
       {/* Trayectorias de ecos — polilíneas punteadas de t=0 a t=120 min */}
-      {!compact && trajectories.map((traj, i) => (
+      {showContours && !compact && trajectories.map((traj, i) => (
         <Polyline
           key={`tr-${i}`}
           positions={traj}
@@ -329,7 +333,7 @@ export default function CellMap({
       ))}
 
       {/* Flechas de dirección del campo — posicionadas sobre los ecos más fuertes */}
-      {arrowPositions.map((ce, i) => (
+      {showArrows && arrowPositions.map((ce, i) => (
         <Marker key={`fa-${i}`} position={[ce.lat, ce.lon]} icon={fieldArrowIcon(ce.bearing_deg)}>
           <Tooltip>
             {ce._src === "wind"
@@ -344,7 +348,7 @@ export default function CellMap({
       {!compact && !focusPoint && points.length > 1 && <BoundsFitter points={points} />}
 
       {/* Marcadores de puntos monitoreados */}
-      {displayPoints.map(pt => {
+      {showPoints && displayPoints.map(pt => {
         const nw = nowcasts[pt.id]
         return (
           <Marker key={pt.id} position={[pt.lat, pt.lon]} icon={pointIcon(nw?.raining_now)}>
@@ -354,7 +358,7 @@ export default function CellMap({
       })}
 
       {/* Eco causante + flechas + trayectoria */}
-      {(focusPoint ? [focusPoint] : points).map(pt => {
+      {showPoints && (focusPoint ? [focusPoint] : points).map(pt => {
         const nw = nowcasts[pt.id]
         if (!nw || nw.cell_lat == null || nw.cell_lon == null) return null
         const echoPos   = [nw.cell_lat, nw.cell_lon]

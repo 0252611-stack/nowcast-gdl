@@ -408,3 +408,41 @@ def test_engine_advection_valid_result():
         assert result.cell_bearing_deg is not None
         if result.eta_minutes is not None:
             assert 0 <= result.eta_minutes <= 60
+
+
+# ---------------------------------------------------------------------------
+# A3 — Guard hourly vacío (no debe lanzar IndexError)
+# ---------------------------------------------------------------------------
+
+def test_engine_empty_hourly_forecast_no_crash():
+    """Con forecast.hourly=[] (degradación), estimate_arrival no lanza IndexError.
+    Usa model_construct para bypassear la validación Pydantic (min_length=1) y
+    simular el escenario de un object construido directamente (sin fetch_forecast)."""
+    from datetime import timedelta
+    from app.schemas import PointForecast
+
+    reading = _mock_reading(dbz=-15.0)
+    t0 = datetime(2026, 6, 11, 4, 0, tzinfo=timezone.utc)
+    t1 = t0 + timedelta(seconds=90)
+    older = _frame1_bytes()
+    newer = _shifted_frame(shift_x=10)
+    frames = [(newer, t1), (older, t0)]
+
+    # Bypasear Pydantic para simular hourly vacío (caso defensivo)
+    empty_forecast = PointForecast.model_construct(
+        point_id="centro",
+        name="Centro GDL",
+        lat=GDL_LAT,
+        lon=GDL_LON,
+        generated_at=t0,
+        hourly=[],
+    )
+
+    # No debe lanzar ninguna excepción (guard en engine.py línea 161)
+    result = estimate_arrival("centro", reading, empty_forecast, frames, BOUNDS)
+
+    assert isinstance(result, NowcastResult)
+    assert result.method in {
+        "no_echo", "no_motion", "no_approaching_cell", "advection",
+        "insufficient_frames",
+    }, f"método inesperado: {result.method}"

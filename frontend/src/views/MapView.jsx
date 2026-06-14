@@ -6,8 +6,14 @@ import { useState, useEffect } from "react"
 import CellMap from "../components/CellMap.jsx"
 import { getPoints, getRadar } from "../api.js"
 import { theme } from "../theme.js"
+import { API_BASE } from "../config.js"
 
-const API_BASE = import.meta.env.VITE_API_URL ?? "http://localhost:8000"
+const LAYERS = [
+  { key: "showRadar",    label: "Radar",     title: "Mostrar/ocultar la imagen del radar IAM como fondo" },
+  { key: "showContours", label: "Contornos", title: "Mostrar/ocultar los contornos de los ecos de lluvia" },
+  { key: "showArrows",   label: "Flechas",   title: "Mostrar/ocultar las flechas de dirección del campo óptico" },
+  { key: "showPoints",   label: "Puntos",    title: "Mostrar/ocultar los puntos monitoreados y sus ecos causantes" },
+]
 
 export default function MapView() {
   const [points, setPoints] = useState([])
@@ -18,6 +24,11 @@ export default function MapView() {
   const [radarBounds, setRadarBounds] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  const [layers, setLayers] = useState({ showRadar: true, showContours: true, showArrows: true, showPoints: true })
+
+  function toggleLayer(key) {
+    setLayers(prev => ({ ...prev, [key]: !prev[key] }))
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -83,16 +94,34 @@ export default function MapView() {
 
       {!loading && !error && (
         <>
+          <div style={st.toggleBar} role="group" aria-label="Capas del mapa">
+            {LAYERS.map(({ key, label, title }) => (
+              <button
+                key={key}
+                style={layers[key] ? st.toggleOn : st.toggleOff}
+                onClick={() => toggleLayer(key)}
+                aria-pressed={layers[key]}
+                title={title}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
           <div style={st.mapWrapper}>
             <CellMap
               points={points}
               nowcasts={nowcasts}
               rainviewerUrl={rainviewerUrl}
-              height="calc(100vh - 220px)"
+              height="calc(100vh - 260px)"
               contextEchoes={contextEchoes}
               echoContours={echoContours}
               radarImageUrl={radarImageUrl}
               radarBounds={radarBounds}
+              showRadar={layers.showRadar}
+              showContours={layers.showContours}
+              showArrows={layers.showArrows}
+              showPoints={layers.showPoints}
             />
           </div>
 
@@ -139,14 +168,39 @@ export default function MapView() {
   )
 }
 
+const toggleBase = {
+  padding: "5px 14px",
+  borderRadius: "999px",
+  fontSize: "12px",
+  fontWeight: 600,
+  cursor: "pointer",
+  border: "1.5px solid",
+  lineHeight: 1.4,
+  minHeight: "30px",
+  transition: "background 0.15s, color 0.15s",
+}
+
 const st = {
   container:  { padding: "24px", maxWidth: "1280px", margin: "0 auto", width: "100%" },
-  header:     { display: "flex", alignItems: "center", gap: "16px", marginBottom: "16px", flexWrap: "wrap" },
+  header:     { display: "flex", alignItems: "center", gap: "16px", marginBottom: "12px", flexWrap: "wrap" },
   title:      { fontSize: "18px", fontWeight: 700, color: theme.text, margin: 0 },
   alert: {
     padding: "4px 14px", borderRadius: "999px",
     background: theme.accentLight, border: `1px solid ${theme.accent}55`,
     color: "#92400E", fontSize: "12px", fontWeight: 600,
+  },
+  toggleBar:  { display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "10px" },
+  toggleOn: {
+    ...toggleBase,
+    background: theme.primary,
+    borderColor: theme.primary,
+    color: "#FFFFFF",
+  },
+  toggleOff: {
+    ...toggleBase,
+    background: theme.surface,
+    borderColor: theme.border,
+    color: theme.textMuted,
   },
   mapWrapper: { borderRadius: "14px", overflow: "hidden", border: `1px solid ${theme.border}`, boxShadow: theme.shadow },
   status:     { color: theme.textFaint, textAlign: "center", padding: "40px 0" },

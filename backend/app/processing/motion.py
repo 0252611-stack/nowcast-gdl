@@ -15,6 +15,7 @@ from app.processing.pixel_extract import _get_colormap
 _MIN_ECHO_PIXELS = 10
 _MAX_ECHO_SAMPLE = 5_000   # subsample for colormap lookup in nearest_upstream
 _KM_PER_DEG_LAT = 111.32
+_UPSTREAM_CONE_DEG = 120   # semángulo del cono corriente arriba (era 90°)
 
 
 def _km_per_deg_lon(bounds: dict[str, float]) -> float:
@@ -209,20 +210,19 @@ def compute_cell_motion(
     return field_to_global_vector(field, echo_mask, bounds)
 
 
-def nearest_upstream_echo(
+def _upstream_candidates(
     image: Image.Image,
     bounds: dict[str, float],
     point_lat: float,
     point_lon: float,
     motion_bearing_deg: float,
     max_range_km: float = 100.0,
-) -> dict | None:
-    """Eco más cercano corriente arriba del punto dado el rumbo del campo.
+    cone_deg: float = _UPSTREAM_CONE_DEG,
+) -> list[dict]:
+    """Núcleo compartido: devuelve TODOS los ecos dentro del cono upstream, ordenados por distancia.
 
-    'Corriente arriba' = dirección opuesta al rumbo (de donde viene el campo).
-    Filtra por dBZ >= DBZ_THRESHOLD. Devuelve:
-      {"distance_km", "cell_lat", "cell_lon", "bearing_cell_to_point_deg", "dbz"}
-    o None si no hay eco upstream dentro de max_range_km.
+    Cada candidato: {"distance_km", "cell_lat", "cell_lon", "bearing_cell_to_point_deg", "dbz"}.
+    Lista vacía si no hay eco upstream dentro de max_range_km.
     """
     arr = np.array(image.convert("RGBA"))
     H, W = arr.shape[:2]
@@ -230,12 +230,11 @@ def nearest_upstream_echo(
 
     ys, xs = np.where(alpha > 0)
     if len(xs) == 0:
-        return None
+        return []
 
-    # Subsample para eficiencia en la búsqueda del vecino más cercano en colormap
+    # Submuestreo DETERMINISTA por stride: misma imagen → mismo resultado.
+    # (antes np.random.choice hacía que la ETA saltara de ciclo a ciclo)
     if len(xs) > _MAX_ECHO_SAMPLE:
-        # Submuestreo DETERMINISTA por stride: misma imagen → mismo resultado.
-        # (antes np.random.choice hacía que la ETA saltara de ciclo a ciclo)
         idx = np.linspace(0, len(xs) - 1, _MAX_ECHO_SAMPLE).astype(int)
         ys = ys[idx]
         xs = xs[idx]
@@ -256,7 +255,7 @@ def nearest_upstream_echo(
     dbzs = dbzs[strong]
 
     if len(xs) == 0:
-        return None
+        return []
 
     north, south, east, west = bounds["north"], bounds["south"], bounds["east"], bounds["west"]
     lons = west + (xs / W) * (east - west)
@@ -269,7 +268,7 @@ def nearest_upstream_echo(
 
     in_range = dist_km <= max_range_km
     if not np.any(in_range):
-        return None
+        return []
 
     dlat_km = dlat_km[in_range]
     dlon_km = dlon_km[in_range]
@@ -284,10 +283,10 @@ def nearest_upstream_echo(
     upstream_dir = (motion_bearing_deg + 180) % 360
     angle_diffs = (bearings - upstream_dir + 360) % 360
     angle_diffs = np.where(angle_diffs > 180, angle_diffs - 360, angle_diffs)
-    upstream_mask = np.abs(angle_diffs) <= 90
+    upstream_mask = np.abs(angle_diffs) <= cone_deg
 
     if not np.any(upstream_mask):
-        return None
+        return []
 
     dist_up = dist_km[upstream_mask]
     lats_up = lats[upstream_mask]
@@ -295,15 +294,56 @@ def nearest_upstream_echo(
     bearings_up = bearings[upstream_mask]
     dbzs_up = dbzs[upstream_mask]
 
-    i = int(np.argmin(dist_up))
+    order = np.argsort(dist_up)
+    return [
+        {
+            "distance_km": float(dist_up[i]),
+            "cell_lat": float(lats_up[i]),
+            "cell_lon": float(lons_up[i]),
+            "bearing_cell_to_point_deg": float((bearings_up[i] + 180) % 360),
+            "dbz": float(dbzs_up[i]),
+        }
+        for i in order
+    ]
 
-    return {
-        "distance_km": float(dist_up[i]),
-        "cell_lat": float(lats_up[i]),
-        "cell_lon": float(lons_up[i]),
-        "bearing_cell_to_point_deg": float((bearings_up[i] + 180) % 360),
-        "dbz": float(dbzs_up[i]),
-    }
+
+def nearest_upstream_echo(
+    image: Image.Image,
+    bounds: dict[str, float],
+    point_lat: float,
+    point_lon: float,
+    motion_bearing_deg: float,
+    max_range_km: float = 100.0,
+) -> dict | None:
+    """Eco más cercano corriente arriba del punto dado el rumbo del campo.
+
+    API pública intacta para retrocompatibilidad. Internamente usa _upstream_candidates
+    con cono ampliado a ±120°. Para buscar múltiples candidatos (multicelular), usar
+    find_upstream_echoes.
+    """
+    candidates = _upstream_candidates(
+        image, bounds, point_lat, point_lon, motion_bearing_deg, max_range_km
+    )
+    return candidates[0] if candidates else None
+
+
+def find_upstream_echoes(
+    image: Image.Image,
+    bounds: dict[str, float],
+    point_lat: float,
+    point_lon: float,
+    motion_bearing_deg: float,
+    max_range_km: float = 100.0,
+    max_candidates: int = 5,
+) -> list[dict]:
+    """Hasta max_candidates ecos corriente arriba, ordenados por distancia (más cercano primero).
+
+    Permite que el motor de nowcasting evalúe múltiples celdas y elija la que
+    llega antes al punto monitoreado (B1: búsqueda multicelular).
+    """
+    return _upstream_candidates(
+        image, bounds, point_lat, point_lon, motion_bearing_deg, max_range_km
+    )[:max_candidates]
 
 
 def find_context_echoes(
@@ -422,7 +462,10 @@ def project_cell(
 
     # wind_700 da DE DÓNDE viene → se mueve HACIA (dir+180)
     wind_toward = (wind_700_dir_deg + 180) % 360
-    conf_wind = _cos_diff(motion_bearing_deg, wind_toward)
+    # La alineación angular se pondera por la magnitud del viento: viento < 5 km/h
+    # es prácticamente en calma y no aporta señal de dirección.
+    wind_magnitude_factor = min(1.0, wind_700_speed_kmh / 20.0)
+    conf_wind = _cos_diff(motion_bearing_deg, wind_toward) * wind_magnitude_factor
 
     # ¿El campo se dirige hacia el punto?
     conf_dir = _cos_diff(motion_bearing_deg, bearing_cell_to_point_deg)

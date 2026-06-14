@@ -41,6 +41,63 @@ _precip_cache: dict[tuple, float] = {}
 # Cache para ensemble por punto: key = (lat_1dec, lon_1dec, hour_bucket)
 _ensemble_cache: dict[tuple, float] = {}
 
+# ── Gestión de ciclo de vida del cache ───────────────────────────────────────
+# La última parte de cada clave es siempre el hour_bucket. Cuando la hora cambia
+# todas las entradas de horas anteriores son stale: las purgamos de una vez.
+_last_purge_bucket: str = ""
+
+# Contador de cache misses (requests reales a Open-Meteo) por hora — L5.
+_miss_count: int = 0
+_miss_hour: str = ""
+
+
+def _purge_old_entries(cache: dict, current_bucket: str) -> int:
+    """Elimina entradas cuya hora (último elemento de la clave) no coincide con current_bucket.
+    Devuelve el número de entradas eliminadas."""
+    stale = [k for k in cache if k[-1] != current_bucket]
+    for k in stale:
+        del cache[k]
+    return len(stale)
+
+
+def _maybe_purge_all(current_bucket: str) -> None:
+    """Purga todos los caches cuando cambia la hora — evita crecimiento ilimitado."""
+    global _last_purge_bucket
+    if current_bucket == _last_purge_bucket:
+        return
+    total = (
+        _purge_old_entries(_cache, current_bucket)
+        + _purge_old_entries(_wind_cache, current_bucket)
+        + _purge_old_entries(_precip_cache, current_bucket)
+        + _purge_old_entries(_ensemble_cache, current_bucket)
+    )
+    if total:
+        logger.debug("Cache Open-Meteo: purgadas %d entradas de hora anterior.", total)
+    _last_purge_bucket = current_bucket
+
+
+def _record_miss() -> None:
+    """Registra un cache miss (request real a Open-Meteo) — para el contador L5."""
+    global _miss_count, _miss_hour
+    bucket = _hour_bucket()
+    if bucket != _miss_hour:
+        _miss_count = 0
+        _miss_hour = bucket
+    _miss_count += 1
+
+
+def get_cache_stats() -> dict:
+    """Devuelve el tamaño actual de cada cache y los requests reales de la hora actual.
+    Útil para el log de observabilidad (L1 y L5)."""
+    return {
+        "forecast": len(_cache),
+        "wind": len(_wind_cache),
+        "precip": len(_precip_cache),
+        "ensemble": len(_ensemble_cache),
+        "total": len(_cache) + len(_wind_cache) + len(_precip_cache) + len(_ensemble_cache),
+        "misses_this_hour": _miss_count,
+    }
+
 
 def _hour_bucket() -> str:
     """Return current UTC time truncated to the hour as a string key."""
@@ -139,6 +196,7 @@ async def fetch_all_points(
     Objetivo: < 200 calls/día para 7 puntos.
     """
     bucket = _hour_bucket()
+    _maybe_purge_all(bucket)  # A1: purgar entradas de horas anteriores
 
     async def _fetch_or_cache(point: dict) -> PointForecast:
         pid = point["id"]
@@ -147,6 +205,7 @@ async def fetch_all_points(
             logger.debug("Cache hit for point %s bucket %s", pid, bucket)
             return _cache[cache_key]
 
+        _record_miss()  # L5: contabilizar request real
         result = await fetch_forecast(
             client,
             point_id=pid,
@@ -177,9 +236,12 @@ async def fetch_wind_at(
     """
     if level not in _VALID_LEVELS:
         level = 700
-    key = (round(lat, 1), round(lon, 1), level, _hour_bucket())
+    bucket = _hour_bucket()
+    _maybe_purge_all(bucket)  # A1: purgar entradas de horas anteriores
+    key = (round(lat, 1), round(lon, 1), level, bucket)
     if key in _wind_cache:
         return _wind_cache[key]
+    _record_miss()  # L5: contabilizar request real
 
     speed_var = f"wind_speed_{level}hPa"
     dir_var   = f"wind_direction_{level}hPa"
@@ -271,6 +333,7 @@ async def sample_precip_grid(
         key = (round(lat, 1), round(lon, 1), bucket)
         if key in _precip_cache:
             return {"lat": round(lat, 4), "lon": round(lon, 4), "precip_mm": _precip_cache[key]}
+        _record_miss()  # L5: contabilizar request real
         try:
             params = {
                 "latitude": lat,
@@ -337,6 +400,7 @@ async def fetch_ensemble(
     key = (round(lat, 1), round(lon, 1), _hour_bucket())
     if key in _ensemble_cache:
         return _ensemble_cache[key]
+    _record_miss()  # L5: contabilizar request real
 
     params = {
         "latitude": lat,

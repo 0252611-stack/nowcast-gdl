@@ -79,14 +79,23 @@ def load_colormap(legend_path: str) -> dict[tuple[int, int, int], float]:
 def color_to_dbz(
     color: tuple[int, int, int],
     colormap: dict[tuple[int, int, int], float],
+    lut: dict[tuple[int, int, int], float] | None = None,
 ) -> float:
-    """Devuelve el valor dBZ más cercano al color RGB dado, buscando el
-    vecino más próximo en el espacio de color del colormap calibrado.
+    """Devuelve el valor dBZ más cercano al color RGB dado.
 
-    Distancia euclidiana: sqrt((r1-r2)^2 + (g1-g2)^2 + (b1-b2)^2).
+    Búsqueda en tres pasos para minimizar trabajo:
+    1. Coincidencia exacta en el colormap (O(1)).
+    2. Coincidencia en el LUT de llamadas anteriores (O(1)).
+    3. Vecino más próximo en el colormap (O(N)), resultado cacheado en `lut`.
+
+    `lut` es un dict externo (estado del llamador) que acumula colores ya resueltos.
     """
-    r, g, b = color
+    if color in colormap:
+        return colormap[color]
+    if lut is not None and color in lut:
+        return lut[color]
 
+    r, g, b = color
     best_dbz = DBZ_MIN
     best_dist_sq = float("inf")
 
@@ -96,6 +105,8 @@ def color_to_dbz(
             best_dist_sq = dist_sq
             best_dbz = dbz
 
+    if lut is not None:
+        lut[color] = best_dbz
     return best_dbz
 
 

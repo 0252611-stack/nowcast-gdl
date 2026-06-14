@@ -177,3 +177,58 @@ async def test_fetch_forecast_validates_schema():
                 wind_direction_700hPa_deg=270.0,
                 unknown_extra=99,  # This must be rejected
             )
+
+
+# ---------------------------------------------------------------------------
+# A1 — Cache purge (entradas de hora anterior se eliminan al cambiar la hora)
+# ---------------------------------------------------------------------------
+
+def test_cache_purge_removes_stale_entries():
+    """_maybe_purge_all elimina entradas de horas anteriores sin tocar las actuales."""
+    from app.sources.openmeteo import _cache, _wind_cache, _maybe_purge_all
+
+    old_bucket = "2026-06-10T08"
+    new_bucket = "2026-06-10T09"
+
+    # Insertar entradas antiguas
+    _cache[("punto_viejo", old_bucket)] = object()  # type: ignore[assignment]
+    _wind_cache[(20.6, -103.4, 700, old_bucket)] = {"toward_deg": 90.0, "speed_kmh": 30.0}
+
+    # Insertar entrada con el bucket nuevo (no debe borrarse)
+    _cache[("punto_nuevo", new_bucket)] = object()  # type: ignore[assignment]
+
+    _maybe_purge_all(new_bucket)
+
+    assert ("punto_viejo", old_bucket) not in _cache, "Entrada antigua debe eliminarse"
+    assert (20.6, -103.4, 700, old_bucket) not in _wind_cache, "Entrada wind antigua debe eliminarse"
+    assert ("punto_nuevo", new_bucket) in _cache, "Entrada del bucket actual debe sobrevivir"
+
+
+def test_cache_purge_noop_same_bucket():
+    """_maybe_purge_all no hace nada si el bucket no cambió."""
+    from app.sources.openmeteo import _cache, _maybe_purge_all
+
+    same_bucket = "2026-06-10T10"
+    _cache[("pt_keep", same_bucket)] = object()  # type: ignore[assignment]
+
+    # Forzar que el último bucket purgado coincida con same_bucket
+    import app.sources.openmeteo as _om
+    _om._last_purge_bucket = same_bucket
+
+    _maybe_purge_all(same_bucket)
+
+    assert ("pt_keep", same_bucket) in _cache, "No debe purgar entradas del mismo bucket"
+
+
+def test_get_cache_stats_returns_expected_keys():
+    """get_cache_stats devuelve un dict con las claves de observabilidad."""
+    from app.sources.openmeteo import get_cache_stats
+    stats = get_cache_stats()
+    assert "total" in stats
+    assert "forecast" in stats
+    assert "wind" in stats
+    assert "precip" in stats
+    assert "ensemble" in stats
+    assert "misses_this_hour" in stats
+    assert isinstance(stats["total"], int)
+    assert stats["total"] >= 0

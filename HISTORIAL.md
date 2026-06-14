@@ -640,6 +640,124 @@ detecta ETA < 30 min en algún punto monitoreado. Requiere:
 
 ---
 
+---
+
+## Sesión 5 — 14 jun 2026 — Auditoría + mejoras de motor, logging y UI
+
+Plan ejecutado en dos bloques (A urgente + B sustancial) + logging. Todos los cambios
+son no-rompedores: tests de 117 → 121, lint 0 warnings, build verde en cada paso.
+
+### Bloque A — Correcciones urgentes ✅
+
+**A1 — Fuga de memoria del cache Open-Meteo:**
+`openmeteo.py` tenía 4 dicts de cache que crecían sin cota → RAM creciente en Railway.
+Fix: purga horaria atómica via `_maybe_purge_all(bucket)` — cuando cambia la hora UTC,
+se eliminan todas las entradas de la hora anterior en los 4 caches simultáneamente.
+Funciones nuevas: `get_cache_stats()` para observabilidad, `_record_miss()` para el
+contador de requests reales.
+
+**A2 — `DBZ_RAIN_THRESHOLD` demasiado bajo:**
+Umbral subido de 13.0 → **18.0 dBZ**, alineado con `DBZ_THRESHOLD` de tracking.
+A 13 dBZ se incluía virga y ecos de ruido como "lloviendo ahora", inflando falsas alarmas.
+
+**A3 — Guard de `forecast.hourly[0]` (posible IndexError):**
+`engine.py:161` accedía a `forecast.hourly[0]` sin verificar si la lista estaba vacía.
+Fix: guard `if forecast.hourly:` antes del acceso; si vacío, `wind_speed_700 = 0.0`
+(degradación a solo radar sin corrección de viento 700 hPa). Test nuevo con
+`PointForecast.model_construct(hourly=[])` para bypassear la validación Pydantic
+(`min_length=1` impide instanciarlo de otro modo).
+
+**A4 — Fetch de pronóstico puede bloquear el loop de radar:**
+Cada punto llamaba a Open-Meteo sin timeout de pared dentro del ciclo de 90 s.
+Fix: `asyncio.wait_for(fetch_forecast(...), timeout=12.0)` por punto; si expira, se
+propaga como excepción y se loguea como warning, sin tumbar el ciclo.
+
+**A5 — Tooltips educativos en la UI:**
+- `RadarStatus.jsx`: tooltip en el valor dBZ explicando la escala en español simple.
+- `PointCard.jsx`: tooltip en el badge de lluvia/virga/sin eco explicando dBZ ≥18;
+  tooltip en el badge ETA explicando qué es el "Tiempo Estimado de Llegada".
+
+**Tests nuevos (A1 + A3):** `test_cache_purge_removes_stale_entries`,
+`test_cache_purge_noop_same_bucket`, `test_get_cache_stats_returns_expected_keys`,
+`test_engine_empty_hourly_forecast_no_crash`. Tests totales: **121/121** ✅
+
+---
+
+### Logging — L1 a L5 ✅
+
+Todas las mejoras usan `logging` estándar, sin dependencias nuevas.
+
+- **L1** — `scheduler.py`: loguea el tamaño del cache Open-Meteo tras cada ciclo
+  (`total`, desglose por tipo, requests reales de la hora actual).
+- **L2** — `scheduler.py`: alerta si los bounds del frame nuevo difieren > 0.01° de
+  los anteriores (`state.last_bounds`) — indica reencuadre del IAM.
+- **L3** — `engine.py`: `log.warning` si `conf_radar` sale de `[0,1]` antes del clamp
+  del blend — caza bugs de fórmula que el clamp silenciaría.
+- **L4** — `scheduler.py`: una vez por hora (en `run_forecast_loop`), loguea
+  POD/FAR/CSI/Acc globales desde `get_skill_metrics`.
+- **L5** — Incluido en L1: el contador de misses reales (requests a Open-Meteo fuera
+  de cache) por hora es visible directamente en el log de cache.
+
+---
+
+### Bloque B — Mejoras sustanciales ✅
+
+**B1 — Búsqueda multicelular (ecos upstream):**
+El motor evaluaba solo el eco más cercano corriente arriba. Ahora `find_upstream_echoes`
+(nueva en `motion.py`) devuelve hasta 5 candidatos dentro del cono. El engine itera
+todos, proyecta la ETA de cada uno, y elige el de **menor ETA** (el que llega primero).
+El cono upstream se amplió de ±90° a **±120°** (constante `_UPSTREAM_CONE_DEG`).
+La función `nearest_upstream_echo` existente delega a `_upstream_candidates` para
+mantener compatibilidad de API (sin romper tests).
+
+**B2 — Confianza interpretable:**
+`NowcastResult` expone 3 nuevos campos nullable (actualizado en `schemas.py` y
+`api.js` en el mismo commit):
+- `conf_radar`: confianza cruda del radar (optical flow + alineación) antes del blend NWP.
+- `weight_radar`: peso `w` del radar en el blend final.
+- `mult_trend`: multiplicador de tendencia de área.
+El tooltip de confianza en `PointCard.jsx` muestra el desglose:
+"radar X% · modelo Y% · tendencia ×Z.ZZ (peso radar W%)".
+
+**B3 — Toggles de capas en el mapa:**
+`MapView.jsx` añade 4 botones pill (`Radar / Contornos / Flechas / Puntos`) con
+estado React local (`showRadar`, `showContours`, `showArrows`, `showPoints`).
+Cada botón tiene `aria-pressed` y `title` descriptivo; color lleno (primary) cuando
+activo, borde gris cuando inactivo.
+`CellMap.jsx` acepta los 4 props y los aplica condicionalmente en cada bloque de render.
+El alto del mapa se ajusta de `100vh - 220px` a `100vh - 260px` para acomodar la barra.
+
+**B4 — `API_BASE` centralizado:**
+Nuevo `frontend/src/config.js` con `export const API_BASE = import.meta.env.VITE_API_URL ?? "http://localhost:8000"`.
+Los 3 archivos que lo duplicaban (`api.js`, `MapView.jsx`, `PredictionView.jsx`)
+ahora importan de aquí. Grid de tarjetas: `minmax(340px, 1fr)` → `minmax(280px, 1fr)`
+para evitar desbordamiento horizontal en móvil.
+
+**B5 — Refinamientos del motor:**
+- *Colormap LUT*: `color_to_dbz` en `colormap.py` ahora verifica coincidencia exacta
+  en el colormap (O(1)) antes de hacer la búsqueda NN O(N). `pixel_extract.py` mantiene
+  un `_color_lut` módulo-global que cachea colores resueltos por NN entre frames, evitando
+  repetir el scan para el mismo píxel visto en frames anteriores.
+- *Magnitud del viento en confianza*: `project_cell` en `motion.py` ahora escala
+  `conf_wind` por `min(1.0, wind_700_speed_kmh / 20.0)`. Un viento < 5 km/h (calma)
+  ya no aporta señal de alineación, evitando falsa confianza alta con viento nulo.
+- *EMA de tendencia de área*: `estimate_arrival` acepta nuevo param `prev_trend_ema: float|None`.
+  Si se pasa, aplica EMA α=0.5: `trend = 0.5 * raw_trend + 0.5 * prev_trend_ema`.
+  `RadarState` en `scheduler.py` añade `trend_ema: dict` y lo actualiza cada ciclo,
+  suavizando el ruido de fotograma a fotograma en `mult_trend` e `intensity_trend`.
+
+---
+
+### Estado actual
+
+**Tests:** 121/121 ✅ | **Lint:** 0 warnings ✅ | **Build:** ✅
+
+**Pendiente operativo:**
+- `ADMIN_TOKEN` en Railway Variables (token del Sprint 5, pendiente de configurar).
+- Verificar skill 24–48h con nuevo umbral 18 dBZ y motor multicelular.
+
+---
+
 ### Fase 3 — Doppler `_VR_`
 
 Estado: **BLOQUEADA — VR no disponible en API pública** (investigado 14-jun-2026)

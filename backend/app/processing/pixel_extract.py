@@ -81,7 +81,7 @@ def reading_for_point(
             r, g, b, a = rgba.getpixel((px, py))
             if a == 0:
                 continue  # fondo transparente = sin eco
-            dbz = colormap_module.color_to_dbz((r, g, b), cmap)
+            dbz = colormap_module.color_to_dbz((r, g, b), cmap, _color_lut)
             if dbz > best_dbz:
                 best_dbz = dbz
                 best_x, best_y = px, py
@@ -101,6 +101,9 @@ def reading_for_point(
 # Module-level cache for the colormap so we don't reload leyenda.png every call
 _colormap_cache: dict[tuple[int, int, int], float] | None = None
 _legend_path: str | None = None
+# LUT de colores ya resueltos por NN: evita repetir la búsqueda O(N) para colores
+# no presentes en el colormap (antialiasing, compresión PNG). Se acumula entre frames.
+_color_lut: dict[tuple[int, int, int], float] = {}
 
 
 def _get_colormap() -> dict[tuple[int, int, int], float]:

@@ -254,7 +254,16 @@ export default function PointCard({ point, forecast, radar, nowcast, rainviewerU
         <div style={s.row}>
           <div style={s.section}>
             <span style={s.label}>Ahora</span>
-            <span style={hasWeakEcho ? s.weakEchoBadge : s.rainNowBadge(nowcast?.raining_now)}>
+            <span
+              style={hasWeakEcho ? s.weakEchoBadge : s.rainNowBadge(nowcast?.raining_now)}
+              title={
+                nowcast?.raining_now
+                  ? "El radar detecta lluvia activa sobre este punto (dBZ ≥ 18)."
+                  : hasWeakEcho
+                    ? "Eco de radar débil (<18 dBZ). Puede ser virga (lluvia que se evapora antes de llegar al suelo) o precipitación muy ligera."
+                    : "Sin eco significativo en el radar sobre este punto."
+              }
+            >
               {nowcast?.raining_now
                 ? <><CloudRainIcon size={14} color="#16A34A" /> Lloviendo</>
                 : hasWeakEcho
@@ -268,7 +277,10 @@ export default function PointCard({ point, forecast, radar, nowcast, rainviewerU
           {nowcast && !nowcast.raining_now && nowcast.eta_minutes !== null && (
             <div style={s.section}>
               <span style={s.label}>Lluvia en</span>
-              <span style={s.etaBadge}>
+              <span
+                style={s.etaBadge}
+                title={`Tiempo Estimado de Llegada (ETA): el motor de nowcast calculó que la nube de lluvia más cercana tardará ~${nowcast.eta_minutes} minutos en llegar a este punto, usando el flujo óptico del radar y el viento a 700 hPa.`}
+              >
                 <ClockIcon size={14} color="#92400E" />
                 <span style={{ fontFamily: theme.fontMono, fontVariantNumeric: "tabular-nums" }}>
                   {nowcast.eta_minutes} min
@@ -297,7 +309,17 @@ export default function PointCard({ point, forecast, radar, nowcast, rainviewerU
         {/* Confianza del nowcast */}
         {nowcast?.confidence !== null && nowcast?.confidence !== undefined && (
           <div style={s.section}>
-            <div style={s.confidenceBar}>
+            <div
+              style={s.confidenceBar}
+              title={[
+              "Confianza del nowcast:",
+              nowcast.conf_radar != null ? `radar ${Math.round(nowcast.conf_radar * 100)}%` : null,
+              nowcast.model_agreement != null ? `modelo ${Math.round(nowcast.model_agreement * 100)}%` : null,
+              nowcast.mult_trend != null ? `tendencia ×${nowcast.mult_trend.toFixed(2)}` : null,
+              nowcast.weight_radar != null ? `(peso radar ${Math.round(nowcast.weight_radar * 100)}%)` : null,
+              "· Verde >80%, ámbar >50%, gris = baja confianza.",
+            ].filter(Boolean).join(" · ")}
+            >
               <span>Confianza</span>
               <div style={s.confidenceTrack}>
                 <div style={s.confidenceFill(nowcast.confidence)} />

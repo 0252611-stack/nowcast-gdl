@@ -13,8 +13,8 @@ from app import config
 from app.processing.motion import (
     compute_cell_motion,
     field_to_global_vector,
+    find_upstream_echoes,
     multi_frame_motion_field,
-    nearest_upstream_echo,
     project_cell,
     sample_field_at,
     vector_to_speed_bearing,
@@ -46,6 +46,7 @@ def estimate_arrival(
     horizon_minutes: int = 240,
     motion_field: np.ndarray | None = None,
     ensemble_prob: float | None = None,
+    prev_trend_ema: float | None = None,
 ) -> NowcastResult:
     """Estima si lloverá en el punto dentro de horizon_minutes.
 
@@ -125,18 +126,23 @@ def estimate_arrival(
         return _result(method="no_motion")
 
     # D: tendencia de área del eco (crecimiento/decaimiento) entre los 2 frames.
-    trend = _clamp((n_echo_newer - n_echo_older) / max(1, n_echo_older), -1.0, 1.0)
+    # EMA α=0.5 suaviza el ruido de fotograma a fotograma sin eliminar la señal.
+    raw_trend = _clamp((n_echo_newer - n_echo_older) / max(1, n_echo_older), -1.0, 1.0)
+    trend = (0.5 * raw_trend + 0.5 * prev_trend_ema
+             if prev_trend_ema is not None else raw_trend)
+    trend = _clamp(trend, -1.0, 1.0)
     mult_trend = _clamp(1 + 0.5 * trend, 0.5, 1.2)
 
-    # 5. Buscar eco corriente arriba (usa el rumbo GLOBAL del campo para la búsqueda).
+    # 5. Buscar ecos corriente arriba (B1: búsqueda multicelular, cono ±120°).
+    #    Se evalúan hasta 5 candidatos con project_cell y se elige el de menor ETA.
     newer_image = Image.open(io.BytesIO(newer_bytes))
-    nearest = nearest_upstream_echo(
+    candidates = find_upstream_echoes(
         newer_image, bounds,
         forecast.lat, forecast.lon,
         motion["bearing_deg"],
     )
 
-    if nearest is None:
+    if not candidates:
         return _result(
             cell_speed_kmh=round(motion["speed_kmh"], 1),
             cell_bearing_deg=round(motion["bearing_deg"], 1),
@@ -144,40 +150,66 @@ def estimate_arrival(
             method="no_approaching_cell",
         )
 
-    # B: vector LOCAL del campo en la posición del eco causante. Si es significativo,
-    #    refleja el movimiento real de ESA celda; si no, cae al vector global.
-    cell_speed_kmh = motion["speed_kmh"]
-    cell_bearing_deg = motion["bearing_deg"]
-    if motion_field is not None:
-        v_lat, v_lon = sample_field_at(
-            motion_field, nearest["cell_lat"], nearest["cell_lon"], bounds
+    # 6. Proyectar ETA para cada candidato; elegir el de menor tiempo de llegada.
+    if forecast.hourly:
+        wind_speed_700 = forecast.hourly[0].wind_speed_700hPa_kmh
+        wind_dir_700   = forecast.hourly[0].wind_direction_700hPa_deg
+    else:
+        log.debug("hourly vacío para %s — sin corrección de viento 700 hPa", point_id)
+        wind_speed_700 = 0.0
+        wind_dir_700   = 0.0
+
+    best_nearest = None
+    best_proj: dict | None = None
+    best_speed = motion["speed_kmh"]
+    best_bearing = motion["bearing_deg"]
+
+    for cand in candidates:
+        # B: vector LOCAL del campo en la posición de este eco candidato.
+        cspeed = motion["speed_kmh"]
+        cbearing = motion["bearing_deg"]
+        if motion_field is not None:
+            v_lat, v_lon = sample_field_at(
+                motion_field, cand["cell_lat"], cand["cell_lon"], bounds
+            )
+            local_speed, local_bearing = vector_to_speed_bearing(v_lat, v_lon, bounds)
+            if local_speed >= 1.0:
+                cspeed = local_speed
+                cbearing = local_bearing
+
+        proj = project_cell(
+            forecast.lat, forecast.lon,
+            cand["distance_km"],
+            cspeed,
+            cbearing,
+            cand["bearing_cell_to_point_deg"],
+            wind_speed_700,
+            wind_dir_700,
+            horizon_minutes,
         )
-        local_speed, local_bearing = vector_to_speed_bearing(v_lat, v_lon, bounds)
-        if local_speed >= 1.0:
-            cell_speed_kmh = local_speed
-            cell_bearing_deg = local_bearing
 
-    # 6. Proyectar ETA usando viento 700 hPa de la hora más próxima del pronóstico
-    nearest_hour = forecast.hourly[0]
-    projection = project_cell(
-        forecast.lat, forecast.lon,
-        nearest["distance_km"],
-        cell_speed_kmh,
-        cell_bearing_deg,
-        nearest["bearing_cell_to_point_deg"],
-        nearest_hour.wind_speed_700hPa_kmh,
-        nearest_hour.wind_direction_700hPa_deg,
-        horizon_minutes,
-    )
+        if proj["eta_minutes"] is None:
+            continue
 
-    # ETA beyond horizon: eco existe pero llega demasiado tarde para el horizonte
-    if projection["eta_minutes"] is None:
+        if best_proj is None or proj["eta_minutes"] < best_proj["eta_minutes"]:
+            best_proj = proj
+            best_nearest = cand
+            best_speed = cspeed
+            best_bearing = cbearing
+
+    # Ningún candidato llega dentro del horizonte
+    if best_proj is None or best_nearest is None:
         return _result(
-            cell_speed_kmh=round(cell_speed_kmh, 1),
-            cell_bearing_deg=round(cell_bearing_deg, 1),
+            cell_speed_kmh=round(motion["speed_kmh"], 1),
+            cell_bearing_deg=round(motion["bearing_deg"], 1),
             intensity_trend=round(trend, 3),
             method="no_approaching_cell",
         )
+
+    nearest = best_nearest
+    projection = best_proj
+    cell_speed_kmh = best_speed
+    cell_bearing_deg = best_bearing
 
     eta_min = projection["eta_minutes"]
     conf_radar = projection["confidence"]
@@ -190,6 +222,12 @@ def estimate_arrival(
     else:
         model_prob = _model_prob_at(forecast, arrival_time)
     w = _clamp(1 - eta_min / 120, 0.3, 1.0)
+    # L3: advertir si algún componente del blend sale de [0,1] antes del clamp final.
+    if not 0.0 <= conf_radar <= 1.0:
+        log.warning(
+            "conf_radar fuera de rango para %s: conf_radar=%.3f (eta=%d w=%.2f) — se clampea",
+            point_id, conf_radar, eta_min, w,
+        )
     confidence = _clamp(w * conf_radar * mult_trend + (1 - w) * model_prob, 0.0, 1.0)
 
     return _result(
@@ -202,5 +240,9 @@ def estimate_arrival(
         bearing_cell_to_point_deg=round(nearest["bearing_cell_to_point_deg"], 1),
         intensity_trend=round(trend, 3),
         model_agreement=round(model_prob, 3),
+        # B2: componentes del blend — confianza interpretable
+        conf_radar=round(conf_radar, 3),
+        weight_radar=round(w, 3),
+        mult_trend=round(mult_trend, 3),
         method="advection",
     )

@@ -20,11 +20,15 @@ from app.nowcast.engine import estimate_arrival
 from app.processing.motion import multi_frame_motion_field
 from app.processing.pixel_extract import reading_for_point
 from app.schemas import WindSample
-from app.sources.openmeteo import fetch_all_points, fetch_ensemble, fetch_forecast, fetch_wind_700_at, sample_trajectory_wind
+from app.sources.openmeteo import (
+    fetch_all_points, fetch_ensemble, fetch_forecast, fetch_wind_700_at,
+    get_cache_stats, sample_trajectory_wind,
+)
 from app.sources.radar_iam import RadarUnavailable, fetch_current_frame
 from app.storage import (
     get_latest_reading,
     get_recent_frames,
+    get_skill_metrics,
     list_points,
     purge_old_frames,
     purge_old_predictions,
@@ -47,6 +51,8 @@ class RadarState:
     motion_field_ema: object | None = None   # np.ndarray H×W×2 | None
     # Última ETA por punto para log de variabilidad
     last_eta: dict = field(default_factory=dict)  # point_id → (eta_min|None, method)
+    # EMA de la tendencia de área del eco por punto (suaviza ruido de fotograma a fotograma)
+    trend_ema: dict = field(default_factory=dict)  # point_id → float
 
 
 def _scan_time_from_kmz_url(kmz_url: str) -> datetime:
@@ -78,6 +84,18 @@ async def run_radar_loop(conn: sqlite3.Connection, state: RadarState) -> None:
             scan_time = _scan_time_from_kmz_url(kmz_url)
             now_utc = datetime.now(timezone.utc)
             frame_age = (now_utc - scan_time).total_seconds()
+
+            # L2: Alerta si los bounds del radar cambian entre ciclos (no debería ocurrir).
+            # Un cambio indica reencuadre del IAM y posible error en la georreferencia.
+            if state.last_bounds is not None:
+                drift = max(
+                    abs(bounds.get(k, 0) - state.last_bounds.get(k, 0))
+                    for k in ("north", "south", "east", "west")
+                )
+                if drift > 0.01:
+                    log.warning(
+                        "Bounds del radar IAM cambiaron (Δ=%.4f°) — verificar georreferencia.", drift
+                    )
 
             image = Image.open(io.BytesIO(png_bytes))
 
@@ -115,8 +133,10 @@ async def run_radar_loop(conn: sqlite3.Connection, state: RadarState) -> None:
             ) as fc:
                 for pt in list_points(conn):
                     try:
-                        forecast = await fetch_forecast(
-                            fc, pt["id"], pt["name"], pt["lat"], pt["lon"]
+                        # A4: cap de tiempo por punto para no desincronizar el ciclo de 90 s.
+                        forecast = await asyncio.wait_for(
+                            fetch_forecast(fc, pt["id"], pt["name"], pt["lat"], pt["lon"]),
+                            timeout=12.0,
                         )
                         reading = get_latest_reading(conn, pt["id"])
                         # Ensemble prob (Fase 2) — degradación silenciosa si falla
@@ -129,7 +149,10 @@ async def run_radar_loop(conn: sqlite3.Connection, state: RadarState) -> None:
                             pt["id"], reading, forecast, frames, state.last_bounds,
                             motion_field=state.motion_field_ema,
                             ensemble_prob=ens_prob,
+                            prev_trend_ema=state.trend_ema.get(pt["id"]),
                         )
+                        if result.intensity_trend is not None:
+                            state.trend_ema[pt["id"]] = result.intensity_trend
                         if result.cell_lat is not None:
                             try:
                                 ew = await fetch_wind_700_at(fc, result.cell_lat, result.cell_lon)
@@ -192,6 +215,15 @@ async def run_radar_loop(conn: sqlite3.Connection, state: RadarState) -> None:
             state.available = True
             state.last_kmz_url = kmz_url
             state.last_bounds = bounds
+
+            # L1: tamaño del cache Open-Meteo y misses de la hora actual.
+            cs = get_cache_stats()
+            log.info(
+                "Cache Open-Meteo: %d entradas (pronóst=%d viento=%d precip=%d ens=%d) "
+                "— %d requests reales esta hora.",
+                cs["total"], cs["forecast"], cs["wind"], cs["precip"], cs["ensemble"],
+                cs["misses_this_hour"],
+            )
             log.info(
                 "Frame radar OK: %s (age %.0f s) — ciclo %.1f s",
                 kmz_url.rsplit("/", 1)[-1], frame_age, time.monotonic() - cycle_start,
@@ -220,7 +252,8 @@ async def run_radar_loop(conn: sqlite3.Connection, state: RadarState) -> None:
 
 
 async def run_forecast_loop(conn: sqlite3.Connection) -> None:
-    """Precalienta el cache de Open-Meteo una vez por hora para todos los puntos activos."""
+    """Precalienta el cache de Open-Meteo una vez por hora para todos los puntos activos.
+    También emite un log periódico de skill (POD/FAR/CSI) sin necesidad de abrir /metrics."""
     while True:
         try:
             points = list_points(conn)
@@ -229,6 +262,25 @@ async def run_forecast_loop(conn: sqlite3.Connection) -> None:
             ) as client:
                 forecasts = await fetch_all_points(client, points)
                 log.info("Pronóstico Open-Meteo actualizado para %d puntos.", len(forecasts))
+
+            # L4: log de skill global cada hora — tendencia de calidad del motor.
+            m = get_skill_metrics(conn)
+            if m["verified"] > 0:
+                o = m["overall"]
+                log.info(
+                    "Skill global (n=%d verificadas, %d pendientes): "
+                    "POD=%.0f%% FAR=%.0f%% CSI=%.0f%% Acc=%.0f%%",
+                    o["total"], m["pending"],
+                    (o["pod"]      or 0) * 100,
+                    (o["far"]      or 0) * 100,
+                    (o["csi"]      or 0) * 100,
+                    (o["accuracy"] or 0) * 100,
+                )
+            else:
+                log.info(
+                    "Skill global: sin predicciones verificadas aún (%d pendientes).",
+                    m["pending"],
+                )
         except Exception as exc:
-            log.warning("Error actualizando pronóstico: %s", exc)
+            log.warning("Error actualizando pronóstico/skill: %s", exc)
         await asyncio.sleep(3600)

@@ -114,11 +114,16 @@ export default function RadarStatus({ reading, available, rainviewerUrl }) {
   return (
     <div style={styles.wrapper}>
       <div style={styles.readingRow}>
-        <span style={styles.dbz}>
+        <span
+          style={styles.dbz}
+          title="dBZ (decibelios respecto al milímetro cúbico): mide la intensidad del eco de radar. Más alto = gotas más grandes o más densas. ≥18 dBZ indica precipitación real; <18 puede ser virga (lluvia que no llega al suelo)."
+        >
           {reading.dbz.toFixed(1)}
           <span style={styles.dbzUnit}>dBZ</span>
         </span>
-        <span style={styles.badge(cat)}>{catStyle.label}</span>
+        <span style={styles.badge(cat)} title={`Categoría de intensidad basada en el valor dBZ del radar IAM`}>
+          {catStyle.label}
+        </span>
       </div>
       <SourceTag source="iam" />
     </div>

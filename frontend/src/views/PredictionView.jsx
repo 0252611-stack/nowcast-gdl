@@ -13,8 +13,7 @@ import CellMap from "../components/CellMap.jsx"
 import TimeSlider from "../components/TimeSlider.jsx"
 import { getPoints, getRadar, getPrediction } from "../api.js"
 import { theme } from "../theme.js"
-
-const API_BASE = import.meta.env.VITE_API_URL ?? "http://localhost:8000"
+import { API_BASE } from "../config.js"
 
 export default function PredictionView() {
   const [points, setPoints]           = useState([])
