@@ -191,6 +191,21 @@ function echoArrowPositions(ring, maxArrows = 15) {
   return pts
 }
 
+/**
+ * Marcador de punto muestreado por la malla — círculo + flecha coloreados por velocidad.
+ * Verde ≥30 km/h (confiable), ámbar ≥10 km/h (moderado), gris < 10 km/h (débil).
+ */
+function meshVectorIcon(bearing, speed) {
+  const color = speed >= 30 ? "#16A34A" : speed >= 10 ? "#D97706" : "#6B7280"
+  const svg = `<svg width="20" height="20" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
+    <circle cx="10" cy="10" r="2.5" fill="${color}" opacity="0.85"/>
+    <g transform="rotate(${bearing},10,10)">
+      <polygon points="10,2 13,10 10,8 7,10" fill="${color}" stroke="#ffffff" stroke-width="0.8" stroke-linejoin="round"/>
+    </g>
+  </svg>`
+  return L.divIcon({ className: "", html: svg, iconSize: [20, 20], iconAnchor: [10, 10] })
+}
+
 /** Flecha pequeña naranja — dirección de movimiento dentro del perímetro de un eco */
 function echoMotionArrowIcon(bearing) {
   const svg = `<svg width="14" height="14" viewBox="0 0 14 14" xmlns="http://www.w3.org/2000/svg">
@@ -271,6 +286,7 @@ export default function CellMap({
   showContours  = true,
   showArrows    = true,
   showPoints    = true,
+  showMesh      = false,  // muestra los puntos exactos muestreados por el backend (modo diagnóstico)
 }) {
   const center = focusPoint
     ? [focusPoint.lat, focusPoint.lon]
@@ -356,7 +372,9 @@ export default function CellMap({
         const nearEcho = !hasVectors ? nearestContextEcho(ring, contextEchoes) : null
         const fallbackBearing = (nearEcho?.speed_kmh > 1 ? nearEcho.bearing_deg : null) ?? windFallbackBearing
         const maxArrows = echoArrowCount(ring)
-        const arrowPts = (hasVectors || fallbackBearing != null) ? echoArrowPositions(ring, maxArrows) : []
+        const arrowPts = (!showMesh && (hasVectors || fallbackBearing != null))
+          ? echoArrowPositions(ring, maxArrows)
+          : []
         return (
           <Fragment key={`ec-${i}`}>
             <Polygon
@@ -368,7 +386,20 @@ export default function CellMap({
                 fill:    false,
               }}
             />
-            {arrowPts.map((pt, j) => {
+
+            {/* Modo malla: posiciones exactas muestreadas por el backend */}
+            {showMesh && hasVectors && vectors.map((v, j) => (
+              <Marker key={`em-${i}-${j}`} position={[v.lat, v.lon]} icon={meshVectorIcon(v.bearing_deg, v.speed_kmh)}>
+                <Tooltip>
+                  <span style={{ fontSize: "11px" }}>
+                    {Math.round(v.bearing_deg)}° · {v.speed_kmh.toFixed(0)} km/h
+                  </span>
+                </Tooltip>
+              </Marker>
+            ))}
+
+            {/* Modo normal: grilla del frontend con interpolación al vector más cercano */}
+            {!showMesh && arrowPts.map((pt, j) => {
               const vec = hasVectors ? nearestRingVector(pt[0], pt[1], vectors) : null
               const bearing = vec?.bearing_deg ?? fallbackBearing
               if (bearing == null) return null

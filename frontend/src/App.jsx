@@ -11,6 +11,7 @@ import PointCard from "./components/PointCard.jsx"
 import MapView from "./views/MapView.jsx"
 import AdminView from "./views/AdminView.jsx"
 import PredictionView from "./views/PredictionView.jsx"
+import FieldGridView from "./views/FieldGridView.jsx"
 import { getPoints, getForecast, getRadar, getMetrics } from "./api.js"
 import { theme } from "./theme.js"
 import {
@@ -132,6 +133,9 @@ export default function App() {
               <NavLink to="/prediccion" style={({ isActive }) => isActive ? st.navLinkActive : st.navLink}>
                 Predicción
               </NavLink>
+              <NavLink to="/malla" style={({ isActive }) => isActive ? st.navLinkActive : st.navLink}>
+                Malla
+              </NavLink>
               <NavLink to="/admin" style={({ isActive }) => isActive ? st.navLinkActive : st.navLink}>
                 Admin
               </NavLink>
@@ -219,6 +223,7 @@ export default function App() {
 
         <Route path="/mapa" element={<MapView />} />
         <Route path="/prediccion" element={<PredictionView />} />
+        <Route path="/malla" element={<FieldGridView />} />
         <Route path="/admin" element={<AdminView />} />
       </Routes>
     </div>
