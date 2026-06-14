@@ -21,7 +21,7 @@ from app.nowcast.engine import estimate_arrival
 from app.processing.motion import compute_cell_motion, find_context_echoes, find_echo_contours
 from app.scheduler import RadarState, run_forecast_loop, run_radar_loop
 from app.schemas import ContextEcho, WindSample
-from app.sources.openmeteo import fetch_forecast, fetch_wind_700_at, sample_trajectory_wind
+from app.sources.openmeteo import fetch_forecast, fetch_wind_700_at, sample_trajectory_wind, sample_wind_grid
 from app.sources.rainviewer import fetch_tile_url as fetch_rainviewer_url
 from app.storage import (
     add_point,
@@ -54,6 +54,8 @@ async def lifespan(app: FastAPI):
     app.state.rainviewer_url_ts: float = 0.0
     # Cache de contornos: (frame_time, contours) — global, reutilizable entre puntos
     app.state.echo_contours_cache: tuple | None = None
+    # Cache de predicción: (frame_time, result_dict) — advección semi-Lagrangiana
+    app.state.prediction_cache: tuple | None = None
     log.info("Nowcast GDL iniciado. Scheduler activo.")
     try:
         yield
@@ -248,6 +250,98 @@ async def get_radar(point_id: str):
         "echo_contours": echo_contours,
         "radar_bounds": state.last_bounds,
     }
+
+
+# ---------------------------------------------------------------------------
+# Endpoints de predicción advectiva
+# ---------------------------------------------------------------------------
+
+@app.get("/prediction")
+async def get_prediction():
+    """Predicción advectiva del campo de eco para los próximos 120 minutos.
+
+    Motor: optical flow denso (Farneback) + corrección de viento 700 hPa en
+    malla 4×4. Devuelve 8 pasos de +15 a +120 min con frames PNG y contornos.
+    Cacheado por timestamp de frame — mismo TTL ~90 s que el radar.
+    """
+    from app.processing.predict import build_prediction
+
+    state: RadarState = app.state.radar_state
+
+    if not state.available or state.last_bounds is None:
+        return {
+            "available": False, "method": "radar_unavailable",
+            "base_time": None, "bounds": None,
+            "steps": [], "trajectories": [],
+        }
+
+    frames = get_recent_frames(app.state.db, 2)
+    if len(frames) < 2:
+        return {
+            "available": False, "method": "insufficient_frames",
+            "base_time": None, "bounds": state.last_bounds,
+            "steps": [], "trajectories": [],
+        }
+
+    newer_bytes, newer_time = frames[0]
+    older_bytes, older_time = frames[1]
+
+    # Reusar si el frame base no cambió
+    cached = app.state.prediction_cache
+    if cached is not None and cached[0] == newer_time:
+        result = cached[1]
+        log.debug("Predicción: cache hit para frame %s", newer_time)
+    else:
+        interval_s = max(1.0, (newer_time - older_time).total_seconds())
+        try:
+            async with httpx.AsyncClient(
+                headers={"User-Agent": config.USER_AGENT}, timeout=15
+            ) as client:
+                wind_grid = await sample_wind_grid(client, state.last_bounds)
+        except Exception as exc_w:
+            log.warning("Viento en malla no disponible: %s — usando solo radar", exc_w)
+            wind_grid = []
+
+        result = build_prediction(
+            older_bytes, newer_bytes, interval_s, state.last_bounds, wind_grid
+        )
+        app.state.prediction_cache = (newer_time, result)
+        log.info("Predicción generada: %d pasos, método=%s", len(result["steps"]), result["method"])
+
+    steps_response = [
+        {
+            "minutes": s["minutes"],
+            "image_url": f"/prediction/frame/{i}.png",
+            "contours": s["contours"],
+        }
+        for i, s in enumerate(result["steps"])
+    ]
+
+    return {
+        "available": True,
+        "base_time": newer_time.isoformat(),
+        "bounds": result["bounds"],
+        "method": result["method"],
+        "steps": steps_response,
+        "trajectories": result["trajectories"],
+    }
+
+
+@app.get("/prediction/frame/{idx}.png")
+async def get_prediction_frame(idx: int):
+    """Frame i del nowcast advectivo como PNG (0 = +15 min, 7 = +120 min)."""
+    cached = app.state.prediction_cache
+    if cached is None:
+        raise HTTPException(404, "No hay predicción en caché; llame primero a GET /prediction")
+    _, result = cached
+    frames_png: list[bytes] = result.get("frames_png", [])
+    if idx < 0 or idx >= len(frames_png):
+        raise HTTPException(404, f"Frame {idx} fuera de rango (0–{len(frames_png) - 1})")
+    return Response(
+        content=frames_png[idx],
+        media_type="image/png",
+        headers={"Cache-Control": "no-cache"},
+    )
 
 
 # ---------------------------------------------------------------------------

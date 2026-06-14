@@ -185,6 +185,40 @@ async def fetch_wind_700_at(
     return result
 
 
+async def sample_wind_grid(
+    client: httpx.AsyncClient,
+    bounds: dict[str, float],
+    nx: int = 4,
+    ny: int = 4,
+) -> list[dict]:
+    """Viento 700 hPa en una malla nx×ny sobre el área del radar.
+
+    Reutiliza fetch_wind_700_at (cacheada por hora y 0.1°) — el costo extra
+    de API es mínimo (≤16 llamadas/hora de uso activo; dentro de <200/día).
+    Devuelve lista de {"lat", "lon", "toward_deg", "speed_kmh"}.
+    """
+    north, south, east, west = bounds["north"], bounds["south"], bounds["east"], bounds["west"]
+    lat_step = (north - south) / ny
+    lon_step = (east - west) / nx
+
+    coords = [
+        (south + (j + 0.5) * lat_step, west + (i + 0.5) * lon_step)
+        for j in range(ny)
+        for i in range(nx)
+    ]
+
+    tasks = [fetch_wind_700_at(client, lat, lon) for lat, lon in coords]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    grid = []
+    for (lat, lon), result in zip(coords, results):
+        if isinstance(result, Exception):
+            logger.debug("Wind grid error at (%.2f, %.2f): %s", lat, lon, result)
+            continue
+        grid.append({"lat": round(lat, 4), "lon": round(lon, 4), **result})
+    return grid
+
+
 async def sample_trajectory_wind(
     client: httpx.AsyncClient,
     echo_lat: float,

@@ -57,6 +57,24 @@ export async function getRadar(pointId) {
 }
 
 /**
+ * @typedef {{ lat: number, lon: number }} TrajectoryPoint
+ * @typedef {{ minutes: number, image_url: string, contours: number[][][] }} PredictionStep
+ * @typedef {{
+ *   available: boolean,
+ *   base_time: string|null,
+ *   bounds: {north: number, south: number, east: number, west: number}|null,
+ *   method: string,
+ *   steps: PredictionStep[],
+ *   trajectories: TrajectoryPoint[][],
+ * }} PredictionResult
+ *
+ * @returns {Promise<PredictionResult>}
+ */
+export async function getPrediction() {
+  return fetchJson("/prediction");
+}
+
+/**
  * @returns {Promise<{overall: object, forecast_only: object, by_method: object, pending: number, verified: number}>}
  */
 export async function getMetrics() {

@@ -224,6 +224,7 @@ export default function CellMap({
   echoContours  = [],
   radarImageUrl = null,
   radarBounds   = null,
+  trajectories  = [],   // polilíneas de trayectoria de eco [[lat,lon],…]
 }) {
   const center = focusPoint
     ? [focusPoint.lat, focusPoint.lon]
@@ -316,6 +317,15 @@ export default function CellMap({
           </Fragment>
         )
       })}
+
+      {/* Trayectorias de ecos — polilíneas punteadas de t=0 a t=120 min */}
+      {!compact && trajectories.map((traj, i) => (
+        <Polyline
+          key={`tr-${i}`}
+          positions={traj}
+          pathOptions={{ color: theme.primary, weight: 1.5, dashArray: "4 6", opacity: 0.6 }}
+        />
+      ))}
 
       {/* Flechas de dirección del campo — posicionadas sobre los ecos más fuertes */}
       {arrowPositions.map((ce, i) => (

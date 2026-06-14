@@ -22,6 +22,56 @@ def _km_per_deg_lon(bounds: dict[str, float]) -> float:
     return _KM_PER_DEG_LAT * math.cos(math.radians(lat_mid))
 
 
+def dense_motion_field(
+    frame_older: bytes,
+    frame_newer: bytes,
+    interval_seconds: float,
+    bounds: dict[str, float],
+) -> np.ndarray | None:
+    """Campo denso de movimiento del eco entre dos frames PNG del radar.
+
+    Usa cv2.calcOpticalFlowFarneback y convierte el flujo píxel→píxel a
+    velocidad geográfica en **grados/minuto** por píxel.
+
+    Devuelve un array H×W×2 con (v_lat, v_lon) en grados/min, o None si
+    no hay eco suficiente o el intervalo es ≤0.
+    """
+    if interval_seconds <= 0:
+        return None
+
+    arr_older = np.array(Image.open(io.BytesIO(frame_older)).convert("RGBA"))
+    arr_newer = np.array(Image.open(io.BytesIO(frame_newer)).convert("RGBA"))
+
+    alpha_older = arr_older[:, :, 3]
+    if int((alpha_older > 0).sum()) < _MIN_ECHO_PIXELS:
+        return None
+
+    H, W = arr_older.shape[:2]
+    gray_older = cv2.cvtColor(arr_older[:, :, :3], cv2.COLOR_RGB2GRAY)
+    gray_newer = cv2.cvtColor(arr_newer[:, :, :3], cv2.COLOR_RGB2GRAY)
+
+    # Fondo a 0 para que el flow se ancle en el eco
+    prev = np.where(alpha_older > 0, gray_older, 0).astype(np.uint8)
+    nxt  = np.where(arr_newer[:, :, 3] > 0, gray_newer, 0).astype(np.uint8)
+
+    flow = cv2.calcOpticalFlowFarneback(
+        prev, nxt, None,
+        pyr_scale=0.5, levels=3, winsize=15,
+        iterations=3, poly_n=5, poly_sigma=1.2,
+        flags=0,
+    )  # H×W×2: flow[y,x] = (dx,dy) en píxeles/frame
+
+    # Convertir a grados/minuto por píxel
+    minutes_per_frame = interval_seconds / 60.0
+    deg_lon_per_px = (bounds["east"] - bounds["west"]) / W
+    deg_lat_per_px = (bounds["north"] - bounds["south"]) / H
+
+    v_lon = (flow[:, :, 0] * deg_lon_per_px / minutes_per_frame).astype(np.float32)
+    v_lat = (-flow[:, :, 1] * deg_lat_per_px / minutes_per_frame).astype(np.float32)
+
+    return np.stack([v_lat, v_lon], axis=2)  # H×W×2
+
+
 def compute_cell_motion(
     frame_older: bytes,
     frame_newer: bytes,
@@ -34,15 +84,8 @@ def compute_cell_motion(
     Devuelve {"speed_kmh": float, "bearing_deg": float, "n_echo_pixels": int}.
     Si no hay eco suficiente o el intervalo es ≤0 → speed_kmh=0.
     """
-    img_older = Image.open(io.BytesIO(frame_older)).convert("RGBA")
-    img_newer = Image.open(io.BytesIO(frame_newer)).convert("RGBA")
-
-    arr_older = np.array(img_older)
-    arr_newer = np.array(img_newer)
-
+    arr_older = np.array(Image.open(io.BytesIO(frame_older)).convert("RGBA"))
     alpha_older = arr_older[:, :, 3]
-    alpha_newer = arr_newer[:, :, 3]
-
     echo_mask = alpha_older > 0
     n_echo_pixels = int(echo_mask.sum())
 
@@ -51,44 +94,26 @@ def compute_cell_motion(
     if n_echo_pixels < _MIN_ECHO_PIXELS:
         return _empty
 
-    gray_older = cv2.cvtColor(arr_older[:, :, :3], cv2.COLOR_RGB2GRAY)
-    gray_newer = cv2.cvtColor(arr_newer[:, :, :3], cv2.COLOR_RGB2GRAY)
-
-    # Fondo a 0 para que el flow se ancle en el eco
-    prev = np.where(alpha_older > 0, gray_older, 0).astype(np.uint8)
-    nxt = np.where(alpha_newer > 0, gray_newer, 0).astype(np.uint8)
-
-    flow = cv2.calcOpticalFlowFarneback(
-        prev, nxt, None,
-        pyr_scale=0.5, levels=3, winsize=15,
-        iterations=3, poly_n=5, poly_sigma=1.2,
-        flags=0,
-    )  # (H, W, 2): flow[y,x] = (dx,dy) en píxeles
-
-    dx_mean = float(flow[echo_mask, 0].mean())
-    dy_mean = float(flow[echo_mask, 1].mean())
-
-    if abs(dx_mean) < 1e-6 and abs(dy_mean) < 1e-6:
+    field = dense_motion_field(frame_older, frame_newer, interval_seconds, bounds)
+    if field is None:
         return _empty
 
-    H, W = arr_older.shape[:2]
-    deg_lon_per_px = (bounds["east"] - bounds["west"]) / W
-    deg_lat_per_px = (bounds["north"] - bounds["south"]) / H
+    # Promediar campo denso sobre píxeles con eco → vector global
+    v_lat_mean = float(field[echo_mask, 0].mean())
+    v_lon_mean = float(field[echo_mask, 1].mean())
 
-    dlon = dx_mean * deg_lon_per_px
-    dlat = -dy_mean * deg_lat_per_px  # +dy en imagen = sur = -lat
-
-    dlon_km = dlon * _km_per_deg_lon(bounds)
-    dlat_km = dlat * _KM_PER_DEG_LAT
-
-    dist_km = math.sqrt(dlon_km**2 + dlat_km**2)
-
-    if interval_seconds <= 0 or dist_km < 1e-6:
+    if abs(v_lat_mean) < 1e-9 and abs(v_lon_mean) < 1e-9:
         return _empty
 
-    speed_kmh = dist_km / (interval_seconds / 3600)
-    # Rumbo meteorológico HACIA donde se mueve (0=N, 90=E)
-    bearing_deg = math.degrees(math.atan2(dlon_km, dlat_km)) % 360
+    # Convertir deg/min → km/h y rumbo meteorológico
+    dlon_km_per_min = v_lon_mean * _km_per_deg_lon(bounds)
+    dlat_km_per_min = v_lat_mean * _KM_PER_DEG_LAT
+
+    speed_kmh = math.sqrt(dlon_km_per_min**2 + dlat_km_per_min**2) * 60
+    if speed_kmh < 1e-6:
+        return _empty
+
+    bearing_deg = math.degrees(math.atan2(dlon_km_per_min, dlat_km_per_min)) % 360
 
     return {"speed_kmh": speed_kmh, "bearing_deg": bearing_deg, "n_echo_pixels": n_echo_pixels}
 

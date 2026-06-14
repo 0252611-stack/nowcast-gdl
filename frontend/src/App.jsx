@@ -10,6 +10,7 @@ import { Routes, Route, NavLink } from "react-router-dom"
 import PointCard from "./components/PointCard.jsx"
 import MapView from "./views/MapView.jsx"
 import AdminView from "./views/AdminView.jsx"
+import PredictionView from "./views/PredictionView.jsx"
 import { getPoints, getForecast, getRadar, getMetrics } from "./api.js"
 import { theme } from "./theme.js"
 import {
@@ -128,6 +129,9 @@ export default function App() {
               <NavLink to="/mapa" style={({ isActive }) => isActive ? st.navLinkActive : st.navLink}>
                 Mapa
               </NavLink>
+              <NavLink to="/prediccion" style={({ isActive }) => isActive ? st.navLinkActive : st.navLink}>
+                Predicción
+              </NavLink>
               <NavLink to="/admin" style={({ isActive }) => isActive ? st.navLinkActive : st.navLink}>
                 Admin
               </NavLink>
@@ -214,6 +218,7 @@ export default function App() {
         } />
 
         <Route path="/mapa" element={<MapView />} />
+        <Route path="/prediccion" element={<PredictionView />} />
         <Route path="/admin" element={<AdminView />} />
       </Routes>
     </div>
