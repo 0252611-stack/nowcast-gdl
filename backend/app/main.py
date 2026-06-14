@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 
 from app import config
 from app.nowcast.engine import estimate_arrival
-from app.processing.motion import compute_cell_motion, find_context_echoes, find_echo_contours
+from app.processing.motion import compute_cell_motion, find_context_echoes, find_echo_contours, sample_ring_vectors
 from app.scheduler import RadarState, run_forecast_loop, run_radar_loop
 from app.schemas import ContextEcho, WindSample
 from app.sources.openmeteo import (
@@ -194,7 +194,7 @@ async def get_radar(point_id: str):
     nowcast = None
     rainviewer_url = None
     context_echoes: list[ContextEcho] = []
-    echo_contours: list[list[list[float]]] = []
+    echo_contours: list[dict] = []
 
     async with httpx.AsyncClient(
         headers={"User-Agent": config.USER_AGENT}, timeout=10
@@ -251,12 +251,22 @@ async def get_radar(point_id: str):
                     )
                     context_echoes = [ContextEcho(**e) for e in raw]
 
-                    # Contornos: reusar si el frame no cambió (globalespor imagen)
+                    # Contornos enriquecidos con vectores locales del campo de movimiento.
+                    # Se reusan si el frame no cambió (globales por imagen).
                     cached = app.state.echo_contours_cache
                     if cached is not None and cached[0] == newer_time:
                         echo_contours = cached[1]
                     else:
-                        echo_contours = find_echo_contours(img, state.last_bounds)
+                        plain_rings = find_echo_contours(img, state.last_bounds)
+                        mf = state.motion_field_ema
+                        echo_contours = [
+                            {
+                                "ring": ring,
+                                "vectors": sample_ring_vectors(ring, mf, state.last_bounds)
+                                if mf is not None else [],
+                            }
+                            for ring in plain_rings
+                        ]
                         app.state.echo_contours_cache = (newer_time, echo_contours)
             except Exception as exc_ce:
                 log.debug("Context echoes no disponibles: %s", exc_ce)

@@ -143,6 +143,69 @@ def sample_field_at(
     return (float(patch[:, :, 0].mean()), float(patch[:, :, 1].mean()))
 
 
+def _point_in_ring(lat: float, lon: float, ring: list[list[float]]) -> bool:
+    """Ray-casting: True si (lat, lon) está dentro del polígono cerrado `ring`."""
+    inside = False
+    n = len(ring)
+    j = n - 1
+    for i in range(n):
+        yi, xi = ring[i]
+        yj, xj = ring[j]
+        if (yi > lat) != (yj > lat) and lon < (xj - xi) * (lat - yi) / (yj - yi) + xi:
+            inside = not inside
+        j = i
+    return inside
+
+
+def sample_ring_vectors(
+    ring: list[list[float]],
+    motion_field: np.ndarray,
+    bounds: dict[str, float],
+) -> list[dict]:
+    """Muestrea el campo de movimiento en puntos interiores del anillo.
+
+    Genera una grilla adaptativa al tamaño del eco (densidad proporcional al
+    span en grados) y muestrea `motion_field` en los puntos dentro del polígono.
+    Devuelve [{lat, lon, bearing_deg, speed_kmh}]; omite posiciones con
+    speed_kmh < 0.5 (flujo prácticamente nulo).
+    """
+    if len(ring) < 3:
+        return []
+
+    lats = [p[0] for p in ring]
+    lons = [p[1] for p in ring]
+    min_lat, max_lat = min(lats), max(lats)
+    min_lon, max_lon = min(lons), max(lons)
+    span = max(max_lat - min_lat, max_lon - min_lon)
+
+    # Densidad proporcional al span: ~1 celda cada 0.1°, mín 3, máx 8 por lado
+    n_side = max(3, min(8, int(math.ceil(span / 0.1)) + 2))
+    step_lat = (max_lat - min_lat) / n_side if max_lat > min_lat else span / n_side
+    step_lon = (max_lon - min_lon) / n_side if max_lon > min_lon else span / n_side
+
+    results = []
+    for i in range(n_side):
+        for j in range(n_side):
+            lat = min_lat + (i + 0.5) * step_lat
+            lon = min_lon + (j + 0.5) * step_lon
+            if not _point_in_ring(lat, lon, ring):
+                continue
+            try:
+                v_lat, v_lon = sample_field_at(motion_field, lat, lon, bounds)
+                speed, bearing = vector_to_speed_bearing(v_lat, v_lon, bounds)
+            except Exception:
+                continue
+            if speed >= 0.5:
+                results.append({
+                    "lat": round(lat, 5),
+                    "lon": round(lon, 5),
+                    "bearing_deg": round(bearing, 1),
+                    "speed_kmh": round(speed, 1),
+                })
+
+    return results
+
+
 def multi_frame_motion_field(
     frames: list[tuple[bytes, "datetime"]],
     bounds: dict[str, float],

@@ -50,9 +50,12 @@ export async function getForecast(pointId) {
  * @typedef {{ lat: number, lon: number, dbz: number, bearing_deg: number, speed_kmh: number }} ContextEcho
  *
  * @param {string} pointId
+ * @typedef {{ lat: number, lon: number, bearing_deg: number, speed_kmh: number }} MotionVector
+ * @typedef {{ ring: number[][], vectors: MotionVector[] }} EnrichedContour
+ *
  * @returns {Promise<{radar: object|null, radar_available: boolean, nowcast: NowcastResult|null,
  *   rainviewer_url: string|null, context_echoes: ContextEcho[],
- *   echo_contours: number[][][],
+ *   echo_contours: EnrichedContour[],
  *   radar_bounds: {north: number, south: number, east: number, west: number}|null}>}
  */
 export async function getRadar(pointId) {

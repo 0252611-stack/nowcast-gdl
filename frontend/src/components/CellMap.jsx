@@ -120,7 +120,7 @@ function polygonCentroid(ring) {
 
 /**
  * Eco de contexto más cercano al centroide del anillo.
- * Devuelve null si `contextEchoes` está vacío.
+ * Fallback cuando no hay vectores locales del campo (ecos sin motion_field).
  */
 function nearestContextEcho(ring, contextEchoes) {
   if (!contextEchoes.length) return null
@@ -130,6 +130,21 @@ function nearestContextEcho(ring, contextEchoes) {
   for (const ce of contextEchoes) {
     const d = Math.hypot(ce.lat - cLat, ce.lon - cLon)
     if (d < bestDist) { bestDist = d; best = ce }
+  }
+  return best
+}
+
+/**
+ * Vector del campo más cercano a la posición (lat, lon) dentro del ring.
+ * Devuelve null si no hay vectores disponibles o ninguno pasa el filtro.
+ */
+function nearestRingVector(lat, lon, vectors) {
+  if (!vectors.length) return null
+  let best = null
+  let bestDist = Infinity
+  for (const v of vectors) {
+    const d = Math.hypot(v.lat - lat, v.lon - lon)
+    if (d < bestDist) { bestDist = d; best = v }
   }
   return best
 }
@@ -282,6 +297,12 @@ export default function CellMap({
       })
     : []
 
+  // Normalizar echoContours: acepta tanto el formato enriquecido {ring, vectors}
+  // (desde /radar) como el formato plano number[][] (desde pasos de predicción).
+  const normalizedContours = echoContours.map(c =>
+    Array.isArray(c) ? { ring: c, vectors: [] } : c
+  )
+
   // Posiciones de los ecos causantes (para colorear su contorno en naranja)
   const causantePositions = Object.values(nowcasts)
     .filter(nw => nw?.cell_lat != null && nw?.cell_lon != null)
@@ -325,16 +346,17 @@ export default function CellMap({
         <TileLayer url={rvTemplate} opacity={0.6} attribution="RainViewer" />
       )}
 
-      {/* Contornos de eco — naranja+grueso para el causante, slate+fino para los demás;
-          flechitas interiores con la dirección del eco de contexto más cercano a cada contorno */}
-      {showContours && !compact && echoContours.map((ring, i) => {
+      {/* Contornos de eco — naranja+grueso para el causante, slate+fino para los demás.
+          Flechas interiores con vector local del campo (Opción B): cada flecha usa el
+          vector muestreado por el backend más cercano a su posición; si no hay vectores
+          (pasos de predicción) cae al eco de contexto más próximo o al viento 700 hPa. */}
+      {showContours && !compact && normalizedContours.map(({ ring, vectors }, i) => {
         const isCausante = causantePositions.some(pos => pointInPolygon(pos, ring))
-        // Dirección local: eco de contexto más cercano al centroide de este contorno.
-        // Si el eco más cercano está casi en calma (<1 km/h), se usa el fallback de viento 700 hPa.
-        const nearEcho = nearestContextEcho(ring, contextEchoes)
-        const ringBearing = (nearEcho?.speed_kmh > 1 ? nearEcho.bearing_deg : null) ?? windFallbackBearing
+        const hasVectors = vectors.length > 0
+        const nearEcho = !hasVectors ? nearestContextEcho(ring, contextEchoes) : null
+        const fallbackBearing = (nearEcho?.speed_kmh > 1 ? nearEcho.bearing_deg : null) ?? windFallbackBearing
         const maxArrows = echoArrowCount(ring)
-        const arrowPts = ringBearing != null ? echoArrowPositions(ring, maxArrows) : []
+        const arrowPts = (hasVectors || fallbackBearing != null) ? echoArrowPositions(ring, maxArrows) : []
         return (
           <Fragment key={`ec-${i}`}>
             <Polygon
@@ -346,9 +368,12 @@ export default function CellMap({
                 fill:    false,
               }}
             />
-            {arrowPts.map((pt, j) => (
-              <Marker key={`ea-${i}-${j}`} position={pt} icon={echoMotionArrowIcon(ringBearing)} />
-            ))}
+            {arrowPts.map((pt, j) => {
+              const vec = hasVectors ? nearestRingVector(pt[0], pt[1], vectors) : null
+              const bearing = vec?.bearing_deg ?? fallbackBearing
+              if (bearing == null) return null
+              return <Marker key={`ea-${i}-${j}`} position={pt} icon={echoMotionArrowIcon(bearing)} />
+            })}
           </Fragment>
         )
       })}
