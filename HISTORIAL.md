@@ -1002,5 +1002,45 @@ nunca aparecen en producción.
 
 **Pendiente:**
 - Verificación visual en navegador (uvicorn + npm run dev).
-- Push a Railway/Vercel.
 - Calibración de `CELL_MIN_PX`/`CELL_MATCH_MAX_KM` con tráfico real, guiada por los paneles de diagnóstico.
+
+---
+
+## Sesión 8 — 15 jun 2026 — Deploy a producción con volumen persistente
+
+### Configuración Railway + Vercel completa ✅
+
+**Objetivo:** Dejar el stack completamente desplegado en línea con persistencia de datos.
+
+**Cambios realizados:**
+
+- `backend/requirements.txt` — removidos `pytest` y `pytest-asyncio` (dev-only).
+  No pertenecen al build de producción en Railway.
+- `backend/requirements-dev.txt` (nuevo) — `-r requirements.txt` + pytest ≥8.2 + pytest-asyncio ≥0.23.
+  Usar `pip install -r requirements-dev.txt` en desarrollo local.
+- `backend/railway.toml` — sección `[variables]` con `LOG_LEVEL=INFO` y `DATA_DIR=/data`.
+- `frontend/.env.example` — comentario de producción con URL de Railway.
+- `backend/app/main.py` — **fix crítico**: `from pathlib import Path` +
+  `Path(config.DB_PATH).parent.mkdir(parents=True, exist_ok=True)` en lifespan startup,
+  antes de `init_db`. Sin esto, `sqlite3.connect("/data/nowcast.db")` falla si el
+  directorio `/data` no existe aún (contenedor sin volumen montado).
+
+**Volumen persistente Railway:**
+- Nombre: `nowcast-gdl-volume`, montado en `/data`.
+- Garantiza que SQLite (`/data/nowcast.db`) y el JSONL de diagnóstico
+  (`/data/logs/nowcast_diag.jsonl`) sobreviven a cada redeploy.
+
+**Commits:**
+- `chore(deploy)`: configuración Railway + Vercel + requirements-dev.
+- `fix(deploy): create DATA_DIR before sqlite3.connect to avoid crash on Railway`
+  (commit `6d25c86`) — previene crash en arranque cuando `DATA_DIR=/data` y
+  el directorio aún no existe en el contenedor.
+
+**Estado de producción verificado:**
+- `GET /points` → 200 JSON con los 3 puntos AMG ✅
+- `GET /radar/cells` → JSON con `frame_time`, `n_detections=19`, `n_tracks=19`,
+  `diagnostics keys: n_det/n_alive/n_new/n_continued/n_purged` ✅
+- `GET /radar/cells/mask.png` → 200 `image/png` ✅
+- Railway canvas: `nowcast-gdl` Online + `nowcast-gdl-volume` visibles ✅
+
+**Tests:** 183/183 ✅ (sin regresiones)
