@@ -15,10 +15,28 @@ Antes de trabajar en cualquier módulo, leer:
 
 ## Arquitectura
 
-- `backend/` — Python 3.11, FastAPI, scheduler cada 90 s, SQLite
-- `frontend/` — React + Vite + Recharts
+- `backend/` — Python 3.11, FastAPI, scheduler cada 90 s, SQLite (volumen `/data` en Railway)
+- `frontend/` — React + Vite + Recharts + Leaflet; rutas: `/` `/mapa` `/prediccion` `/admin`
 - **Contrato de datos: `backend/app/schemas.py`** — NUNCA cambiar sin
   actualizar `frontend/src/api.js` en el mismo commit
+
+## Módulos clave del backend
+
+- `processing/tracking.py` — detección TITAN (two-level split) + tracking greedy + quality score;
+  `cell_to_dict/from_dict` para persistencia fiel
+- `processing/predict.py` — advección semi-Lagrangiana + `point_intensity_timeline` (0/15/30/45 min)
+- `processing/motion.py` — optical flow Farneback multi-frame + helpers (`sample_field_at`, etc.)
+- `nowcast/engine.py` — `estimate_arrival` (cell_tracking | advection | fallback) +
+  `compute_cell_etas` + `_project_cell_to_point`
+- `storage.py` — tablas: `radar_frames`, `point_readings`, `nowcast_predictions`,
+  `monitored_points`, `tracking_state` (fila única, upsert)
+- `scheduler.py` — desempaca 3-tupla de `update_tracks`; guarda `tracking_state` por ciclo
+
+## Constantes críticas (no hardcodear en otros módulos)
+
+`DBZ_THRESHOLD=18.0`, `DBZ_RAIN_THRESHOLD=18.0`, `CELL_MAX_PX=2000`,
+`CELL_SPLIT_DBZ=30.0`, `CELL_PREDICT_REGRESSION=True`,
+`TRACKING_STATE_MAX_AGE_MIN=30`, `INTENSITY_VERDICT_DBZ_DELTA=3.0`
 
 ## Datos críticos (verificados 10-jun-2026)
 
