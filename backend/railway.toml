@@ -7,3 +7,7 @@ healthcheckPath = "/points"
 healthcheckTimeout = 300
 restartPolicyType = "on_failure"
 restartPolicyMaxRetries = 5
+
+[variables]
+LOG_LEVEL = "INFO"
+DATA_DIR = "/data"
