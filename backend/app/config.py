@@ -51,6 +51,22 @@ CELL_MATCH_MAX_KM: float = 15.0  # Distancia máx de matching greedy entre ciclo
 CELL_MAX_MISSED: int = 1       # Ciclos sin match antes de purgar una celda
 CELL_HISTORY_LEN: int = 8      # Longitud del historial de centroides por celda
 
+# --- Logging y observabilidad ---
+LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
+# Ruta del log JSONL estructurado (una línea por ciclo, para análisis posterior).
+# Default: <DATA_DIR>/logs/nowcast_diag.jsonl. Configurable vía env DIAG_LOG_PATH.
+DIAG_LOG_PATH: str = os.getenv("DIAG_LOG_PATH", str(_data_dir / "logs" / "nowcast_diag.jsonl"))
+
+# --- Quality score de celdas (Capa 2 — solo diagnóstico; no altera la ETA) ---
+# Pesos del promedio ponderado; deben sumar 1.0.
+CELL_QUALITY_W_AREA: float = 0.30      # contribución del tamaño de la celda
+CELL_QUALITY_W_SOLIDITY: float = 0.30  # contribución de la compacidad de la forma
+CELL_QUALITY_W_AGE: float = 0.20       # contribución de la persistencia (frames de vida)
+CELL_QUALITY_W_STABILITY: float = 0.20 # contribución de la estabilidad del área histórica
+# Referencias de normalización
+CELL_QUALITY_AREA_REF: int = 300   # area_px en que area_score = 1.0
+CELL_QUALITY_AGE_REF: int = 4      # age_frames en que age_score = 1.0
+
 # --- Zonas horarias ---
 TZ_LOCAL = ZoneInfo("America/Mexico_City")
 TZ_UTC = ZoneInfo("UTC")

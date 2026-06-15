@@ -6,6 +6,9 @@ import pytest
 from zoneinfo import ZoneInfo
 
 from app.schemas import (
+    CellDebugDiagSchema,
+    CellDebugSchema,
+    CellDetectionSchema,
     HourlyForecast,
     NowcastResult,
     PointForecast,
@@ -171,3 +174,93 @@ def test_tracked_cell_schema_rejects_extra_fields():
             ring=[], track=[],
             campo_extra="fallo",
         )
+
+
+# ── Compuerta 2 — CellDetectionSchema, CellDebugDiagSchema, CellDebugSchema ──
+
+def test_cell_detection_schema_valid():
+    det = CellDetectionSchema(
+        lat=20.67, lon=-103.40, area_px=300,
+        mean_dbz=30.0, max_dbz=45.0,
+        solidity=0.85, extent=0.60,
+        ring=[[20.68, -103.41], [20.66, -103.41], [20.66, -103.39]],
+    )
+    assert det.solidity == pytest.approx(0.85)
+    assert det.extent == pytest.approx(0.60)
+
+
+def test_cell_detection_schema_rejects_extra():
+    with pytest.raises(Exception):
+        CellDetectionSchema(
+            lat=20.67, lon=-103.40, area_px=300,
+            mean_dbz=30.0, max_dbz=45.0,
+            solidity=0.85, extent=0.60, ring=[],
+            campo_extra="fallo",
+        )
+
+
+def test_cell_debug_diag_schema_valid():
+    diag = CellDebugDiagSchema(
+        n_det=5, n_alive=4, n_new=2, n_continued=2,
+        n_purged=1, n_split=0, n_merge=1,
+        gate_rejects=3, match_cost_mean=1.25,
+        cell_min_px=30, dbz_threshold=18.0, match_max_km=15.0,
+    )
+    assert diag.n_det == 5
+    assert diag.match_cost_mean == pytest.approx(1.25)
+
+
+def test_cell_debug_diag_schema_none_cost():
+    """match_cost_mean puede ser None (sin tracks previos → sin matching)."""
+    diag = CellDebugDiagSchema(
+        n_det=3, n_alive=3, n_new=3, n_continued=0,
+        n_purged=0, n_split=0, n_merge=0,
+        gate_rejects=0, match_cost_mean=None,
+        cell_min_px=30, dbz_threshold=18.0, match_max_km=15.0,
+    )
+    assert diag.match_cost_mean is None
+
+
+def test_cell_debug_schema_valid():
+    det = CellDetectionSchema(
+        lat=20.67, lon=-103.40, area_px=300,
+        mean_dbz=30.0, max_dbz=45.0, solidity=0.85, extent=0.60, ring=[],
+    )
+    track = TrackedCellSchema(
+        id=1, lat=20.67, lon=-103.40, mean_dbz=30.0, area_px=300,
+        velocity_kmh=20.0, bearing_deg=90.0, age_minutes=1.5,
+        ring=[], track=[], quality=0.65,
+    )
+    diag = CellDebugDiagSchema(
+        n_det=1, n_alive=1, n_new=1, n_continued=0,
+        n_purged=0, n_split=0, n_merge=0,
+        gate_rejects=0, match_cost_mean=None,
+        cell_min_px=30, dbz_threshold=18.0, match_max_km=15.0,
+    )
+    debug = CellDebugSchema(
+        frame_time="2026-06-15T02:00:00+00:00",
+        detections=[det],
+        tracks=[track],
+        diagnostics=diag,
+    )
+    assert len(debug.detections) == 1
+    assert debug.tracks[0].quality == pytest.approx(0.65)
+
+
+def test_tracked_cell_schema_accepts_quality():
+    tc = TrackedCellSchema(
+        id=1, lat=20.67, lon=-103.40, mean_dbz=30.0, area_px=300,
+        velocity_kmh=20.0, bearing_deg=90.0, age_minutes=1.5,
+        ring=[], track=[], quality=0.72,
+    )
+    assert tc.quality == pytest.approx(0.72)
+
+
+def test_tracked_cell_schema_quality_defaults_zero():
+    """quality es opcional; default 0.0 para retrocompatibilidad."""
+    tc = TrackedCellSchema(
+        id=1, lat=20.67, lon=-103.40, mean_dbz=30.0, area_px=300,
+        velocity_kmh=20.0, bearing_deg=90.0, age_minutes=1.5,
+        ring=[], track=[],
+    )
+    assert tc.quality == 0.0

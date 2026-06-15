@@ -887,13 +887,120 @@ pasa `showCells`/`trackedCells` a CellMap.
 
 ---
 
+## Sesión 7 — 14 jun 2026 — Observabilidad: logging, definición de celdas y calidad
+
+**Objetivo:** Hacer visible lo que el sistema ya calcula pero no muestra:
+(a) arreglar el logging (root en WARNING → root en INFO via `LOG_LEVEL`),
+(b) exponer diagnósticos de detección/tracking por ciclo,
+(c) quality score por celda, endpoint JSON `/radar/cells`, máscara PNG, y
+(d) overlay + malla de calidad + panel de skill en la UI.
+
+---
+
+### Etapa 0 — Logging útil y JSONL estructurado ✅
+
+**Problema raíz:** `logging.root` queda en WARNING con uvicorn; los `log.info`
+del tracker (merge/split/purga/celdas vivas) y los L1–L5 de skill/cache
+nunca aparecen en producción.
+
+**Cambios:**
+- `config.py`: `LOG_LEVEL` (default `INFO`) + `DIAG_LOG_PATH` (default
+  `<DATA_DIR>/logs/nowcast_diag.jsonl`).
+- `main.py`: `logging.root.setLevel(...)` en el lifespan startup → ahora
+  todos los loggers `app.*` heredan el nivel correcto.
+- `tracking.py`: `update_tracks` devuelve 3-tupla `(tracks, next_id, diag)`
+  con: `n_alive`, `n_new`, `n_continued`, `n_purged`, `n_split`, `n_merge`,
+  `gate_rejects`, `match_cost_mean`. Conteo determinista (sin np.random).
+- `scheduler.py`: desempaca el 3er valor; añade línea `key=value` en
+  `log.info` por ciclo (greppeable: `grep cycle_s backend.log`); escribe una
+  línea JSON por ciclo en `DIAG_LOG_PATH` (stdlib `json` + `pathlib`, sin deps
+  nuevas). `import json` y `from pathlib import Path` añadidos al módulo.
+- `test_tracking.py`: todos los `update_tracks(...)` actualizados a 3-tupla;
+  nuevos tests `TestDiagDict` (Compuerta 0): 3-tupla, claves requeridas, frame
+  inicial todo-nuevo, continuado en 2º frame, purge, serialización JSONL,
+  determinismo del diag.
+
+**Compuerta 0:** `pytest` 165/165 ✅ (158 base + 7 nuevos).
+
+---
+
 ### Estado actual
 
-**Tests:** 158/158 ✅ | **Lint:** 0 warnings ✅ | **Build:** ✅
+**Tests:** 165/165 ✅ | **Lint:** pendiente (Etapas 1–4) | **Build:** pendiente
+
+**Push pendiente** — con consentimiento explícito del usuario.
+
+### Etapas 1–3 — Quality score + Endpoint JSON + Máscara PNG ✅
+
+**Etapa 1 — Quality score:**
+- `config.py`: constantes `CELL_QUALITY_W_AREA/SOLIDITY/AGE/STABILITY` (pesos),
+  `CELL_QUALITY_AREA_REF`, `CELL_QUALITY_AGE_REF`.
+- `tracking.py`: `detect_cells` devuelve `solidity` y `extent` por celda
+  (clip a 1.0 por artefacto subpíxel de convex hull). `TrackedCell` gana
+  campo `quality: float = 0.0`. Helper `_cell_quality(area_px, solidity,
+  age_frames, area_history, missed_frames) → float` determinista; penalización
+  por `missed_frames`. `detection_mask(image, bounds) → np.ndarray` expuesto
+  para el endpoint de máscara.
+
+**Etapa 2 — Endpoint JSON `/radar/cells`:**
+- `schemas.py` + `api.js` (mismo commit): `quality` aditivo en
+  `TrackedCellSchema`; nuevos modelos `CellDetectionSchema`,
+  `CellDebugDiagSchema`, `CellDebugSchema`; typedef `getCellDebug()` en `api.js`.
+- `scheduler.py`: `RadarState` guarda `last_detections`, `last_track_diag`,
+  `last_frame_time` tras cada ciclo de tracking.
+- `main.py`: endpoint `GET /radar/cells` read-only, sin auth; deserializa el
+  estado y devuelve `CellDebugSchema` con detecciones crudas + tracks + diag.
+
+**Etapa 3 — Máscara PNG `/radar/cells/mask.png`:**
+- `main.py`: endpoint `GET /radar/cells/mask.png` — llama a `detection_mask`,
+  convierte a RGBA (blanco transparente) y devuelve `image/png`. 404 si no
+  hay frame o bounds.
+
+**Compuertas 1–3:** `pytest` 183/183 ✅ | `npm run lint` 0 warnings ✅ |
+`npm run build` ✅.
+
+---
+
+### Estado actual
+
+**Tests:** 183/183 ✅ | **Lint:** 0 warnings ✅ | **Build:** ✅
+
+**Push pendiente** — con consentimiento explícito del usuario.
+
+### Etapa 4 — UI: malla de calidad + panel de skill + debug de detecciones ✅
+
+**`CellMap.jsx`:**
+- `trackedCellColor(mean_dbz)` reemplazado por `qualityColor(q)` —
+  escala rojo/ámbar/verde según `quality` (0–1), no solo por dBZ.
+- `trackedCellArrowIcon(bearing, quality)` usa `qualityColor`.
+- Polígonos de celdas coloreados por `quality`; tooltip incluye
+  `Calidad: {q}%`, `mean_dbz`, `velocity`, `bearing`, `age`, `area`.
+- Nueva capa de **detecciones crudas** (`rawDetections` prop + `showRawDetections`
+  toggle): polígonos grises punteados pre-tracking con tooltip
+  (dBZ, área, solidity, extent).
+
+**`FieldGridView.jsx`:**
+- Importa `getCellDebug` de `api.js`.
+- Estados nuevos: `rawDetections`, `cellDiag`, `skillMetrics`, `showRawDetections`.
+- Toggle nuevo **"Debug celdas"** (detecciones crudas pre-tracking).
+- Carga `getCellDebug()` y `/metrics` en el useEffect (degradación silenciosa).
+- **Panel de skill** (POD/FAR/CSI/Exactitud + pendientes) — colores semafórico.
+- **Panel de diagnóstico de celdas** (n_det, n_alive, n_new, n_continued,
+  n_purged, n_split, n_merge, gate_rejects, match_cost_mean, umbrales de config).
+- **Leyenda de calidad** (verde/ámbar/rojo) visible cuando toggle "Celdas" está ON.
+
+**Compuerta 4:** `pytest` 183/183 ✅ | `npm run lint` 0 warnings ✅ |
+`npm run build` ✅.
+
+---
+
+### Estado actual
+
+**Tests:** 183/183 ✅ | **Lint:** 0 warnings ✅ | **Build:** ✅
 
 **Push pendiente** — con consentimiento explícito del usuario.
 
 **Pendiente:**
-- Push a Railway/Vercel
-- Observar logs del tracker en producción (nº celdas, split/merge)
-- Calibración de `CELL_MIN_PX`/`CELL_MATCH_MAX_KM` con tráfico real de temporada
+- Verificación visual en navegador (uvicorn + npm run dev).
+- Push a Railway/Vercel.
+- Calibración de `CELL_MIN_PX`/`CELL_MATCH_MAX_KM` con tráfico real, guiada por los paneles de diagnóstico.

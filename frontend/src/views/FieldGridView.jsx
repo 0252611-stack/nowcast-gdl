@@ -13,7 +13,7 @@
 
 import { useState, useEffect } from "react"
 import CellMap from "../components/CellMap.jsx"
-import { getPoints, getRadar } from "../api.js"
+import { getPoints, getRadar, getCellDebug } from "../api.js"
 import { theme } from "../theme.js"
 import { API_BASE } from "../config.js"
 
@@ -23,6 +23,9 @@ export default function FieldGridView() {
   const [echoContours, setEchoContours] = useState([])
   const [contextEchoes, setContextEchoes] = useState([])
   const [trackedCells, setTrackedCells] = useState([])
+  const [rawDetections, setRawDetections] = useState([])
+  const [cellDiag, setCellDiag] = useState(null)
+  const [skillMetrics, setSkillMetrics] = useState(null)
   const [radarBounds, setRadarBounds] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -30,6 +33,7 @@ export default function FieldGridView() {
   const [showRadar, setShowRadar] = useState(true)
   const [showPoints, setShowPoints] = useState(true)
   const [showCells, setShowCells] = useState(false)
+  const [showRawDetections, setShowRawDetections] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -61,6 +65,24 @@ export default function FieldGridView() {
 
         setEchoContours(results.find(r => r.echo_contours?.length)?.echo_contours ?? [])
         setTrackedCells(results.find(r => r.tracked_cells?.length)?.tracked_cells ?? [])
+
+        // Diagnóstico de celdas y skill — degradación silenciosa si falla
+        try {
+          const debug = await getCellDebug()
+          if (!cancelled) {
+            setRawDetections(debug.detections ?? [])
+            setCellDiag(debug.diagnostics ?? null)
+          }
+        } catch (_) { /* sin datos de debug — no es error crítico */ }
+
+        try {
+          const metricsUrl = `${API_BASE}/metrics`
+          const mRes = await fetch(metricsUrl)
+          if (mRes.ok) {
+            const m = await mRes.json()
+            if (!cancelled) setSkillMetrics(m)
+          }
+        } catch (_) { /* sin skill — no bloquea */ }
       } catch (e) {
         if (!cancelled) setError(e.message)
       } finally {
@@ -113,7 +135,8 @@ export default function FieldGridView() {
           <div style={st.toggleBar} role="group" aria-label="Capas del mapa">
             {[
               { key: "radar", label: "Radar", val: showRadar, set: setShowRadar },
-              { key: "cells", label: "Celdas", val: showCells, set: setShowCells, title: "Mostrar/ocultar las celdas de tormenta rastreadas (TITAN)" },
+              { key: "cells", label: "Celdas", val: showCells, set: setShowCells, title: "Mostrar/ocultar las celdas de tormenta rastreadas (TITAN) — coloreadas por calidad" },
+              { key: "raw", label: "Debug celdas", val: showRawDetections, set: setShowRawDetections, title: "Mostrar/ocultar las detecciones crudas pre-tracking (para calibración)" },
               { key: "points", label: "Puntos", val: showPoints, set: setShowPoints },
             ].map(({ key, label, val, set, title }) => (
               <button
@@ -145,8 +168,29 @@ export default function FieldGridView() {
               showMesh
               showCells={showCells}
               trackedCells={trackedCells}
+              rawDetections={rawDetections}
+              showRawDetections={showRawDetections}
             />
           </div>
+
+          {/* Leyenda de calidad de celdas (solo visible cuando celdas están activas) */}
+          {showCells && (
+            <div style={{ ...st.legend, marginBottom: "4px" }}>
+              <span style={st.legendTitle}>Calidad de celda:</span>
+              {[
+                { color: "#16A34A", label: "≥ 70% — alta" },
+                { color: "#D97706", label: "40–69% — media" },
+                { color: "#DC2626", label: "< 40% — baja (celda nueva o ruidosa)" },
+              ].map(({ color, label }) => (
+                <span key={color} style={st.legendItem}>
+                  <svg width="12" height="12" viewBox="0 0 12 12" style={{ flexShrink: 0 }}>
+                    <rect x="1" y="1" width="10" height="10" fill={color} rx="2" />
+                  </svg>
+                  {label}
+                </span>
+              ))}
+            </div>
+          )}
 
           {/* Leyenda de velocidad */}
           <div style={st.legend}>
@@ -165,6 +209,55 @@ export default function FieldGridView() {
               </span>
             ))}
           </div>
+
+          {/* Panel de skill (calidad del motor de predicciones) */}
+          {skillMetrics && skillMetrics.verified > 0 && (() => {
+            const o = skillMetrics.overall
+            const fmt = v => v != null ? `${(v * 100).toFixed(0)}%` : "—"
+            return (
+              <div style={{ ...st.statsPanel, marginBottom: "8px" }}>
+                <span style={st.statsTitle}>
+                  Calidad del motor (skill) — {skillMetrics.verified} predicciones verificadas
+                </span>
+                <div style={st.statsGrid}>
+                  <StatCell label="POD" value={fmt(o.pod)} color={o.pod >= 0.7 ? "#16A34A" : o.pod >= 0.5 ? "#D97706" : "#DC2626"} />
+                  <StatCell label="FAR" value={fmt(o.far)} color={o.far <= 0.3 ? "#16A34A" : o.far <= 0.5 ? "#D97706" : "#DC2626"} />
+                  <StatCell label="CSI" value={fmt(o.csi)} color={o.csi >= 0.5 ? "#16A34A" : o.csi >= 0.3 ? "#D97706" : "#DC2626"} />
+                  <StatCell label="Exactitud" value={fmt(o.accuracy)} />
+                  <StatCell label="Pendientes" value={skillMetrics.pending} />
+                </div>
+                <p style={st.statsNote}>
+                  POD = tasa de aciertos, FAR = falsa alarma, CSI = índice de éxito crítico.
+                  Se actualiza automáticamente cada hora.
+                </p>
+              </div>
+            )
+          })()}
+
+          {/* Panel de diagnóstico de celdas (tracking) */}
+          {cellDiag && (
+            <div style={{ ...st.statsPanel, marginBottom: "8px" }}>
+              <span style={st.statsTitle}>Diagnóstico de celdas — último ciclo</span>
+              <div style={st.statsGrid}>
+                <StatCell label="Detectadas" value={cellDiag.n_det} />
+                <StatCell label="Vivas" value={cellDiag.n_alive} />
+                <StatCell label="Nuevas" value={cellDiag.n_new} />
+                <StatCell label="Continuadas" value={cellDiag.n_continued} />
+                <StatCell label="Purgadas" value={cellDiag.n_purged} color={cellDiag.n_purged > 0 ? "#D97706" : undefined} />
+                <StatCell label="Split" value={cellDiag.n_split} />
+                <StatCell label="Merge" value={cellDiag.n_merge} />
+                <StatCell label="Rechazos gate" value={cellDiag.gate_rejects} />
+                <StatCell label="Costo medio match" value={cellDiag.match_cost_mean != null ? cellDiag.match_cost_mean.toFixed(2) : "—"} />
+                <StatCell label="CELL_MIN_PX" value={cellDiag.cell_min_px} />
+                <StatCell label="DBZ umbral" value={`${cellDiag.dbz_threshold} dBZ`} />
+                <StatCell label="Gate max" value={`${cellDiag.match_max_km} km`} />
+              </div>
+              <p style={st.statsNote}>
+                Activa &quot;Celdas&quot; para ver la malla de calidad (verde = alta, rojo = baja).
+                Activa &quot;Debug celdas&quot; para ver las detecciones crudas pre-tracking (gris).
+              </p>
+            </div>
+          )}
 
           {/* Panel de estadísticas */}
           {stats ? (

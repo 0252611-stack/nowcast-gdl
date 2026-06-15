@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 import logging
 import sqlite3
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 
 import httpx
 from PIL import Image
@@ -59,6 +61,10 @@ class RadarState:
     next_cell_id: int = 1
     # Intervalo del último ciclo de radar (para calcular age_minutes en el endpoint)
     _cell_interval_s: float = 90.0
+    # Detecciones crudas (pre-tracking) del último ciclo — para el endpoint /radar/cells
+    last_detections: list = field(default_factory=list)   # list[dict] de detect_cells
+    last_track_diag: dict = field(default_factory=dict)   # dict de update_tracks
+    last_frame_time: object = None                         # datetime | None
 
 
 def _scan_time_from_kmz_url(kmz_url: str) -> datetime:
@@ -133,6 +139,8 @@ async def run_radar_loop(conn: sqlite3.Connection, state: RadarState) -> None:
                         state.motion_field_ema = new_field
 
             # Capa 2: seguimiento de celdas UNA VEZ por ciclo, usando el frame más nuevo.
+            dets: list[dict] = []          # detecciones crudas; inicializar para el log final
+            track_diag: dict = {}          # diagnóstico del matching; inicializar por si falla
             if state.last_bounds and len(frames_for_motion) >= 1:
                 try:
                     import io as _io
@@ -147,14 +155,13 @@ async def run_radar_loop(conn: sqlite3.Connection, state: RadarState) -> None:
                             1.0, (newer_time_track - older_time_track).total_seconds()
                         )
                     state._cell_interval_s = interval_track
-                    state.tracked_cells, state.next_cell_id = update_tracks(
+                    state.tracked_cells, state.next_cell_id, track_diag = update_tracks(
                         state.tracked_cells, dets, newer_time_track,
                         state.last_bounds, interval_track, state.next_cell_id,
                     )
-                    log.debug(
-                        "Tracking: %d celdas rastreadas (next_id=%d)",
-                        len(state.tracked_cells), state.next_cell_id,
-                    )
+                    state.last_detections = dets
+                    state.last_track_diag = track_diag
+                    state.last_frame_time = newer_time_track
                 except Exception as exc_tr:
                     log.warning("Error en tracking de celdas: %s", exc_tr)
 
@@ -257,9 +264,55 @@ async def run_radar_loop(conn: sqlite3.Connection, state: RadarState) -> None:
                 cs["total"], cs["forecast"], cs["wind"], cs["precip"], cs["ensemble"],
                 cs["misses_this_hour"],
             )
+
+            # L3: diagnóstico estructurado del ciclo — parseable por grep y JSONL.
+            _areas = [d["area_px"] for d in dets]
+            _dbzs = [d["mean_dbz"] for d in dets]
+            _cycle_s = round(time.monotonic() - cycle_start, 1)
+            log.info(
+                "cycle_s=%.1f n_det=%d area_min=%s area_med=%s area_max=%s "
+                "dbz_min=%s dbz_max=%s n_alive=%s n_new=%s n_continued=%s "
+                "n_purged=%s n_split=%s n_merge=%s gate_rejects=%s match_cost_mean=%s",
+                _cycle_s,
+                len(dets),
+                min(_areas) if _areas else None,
+                int(np.median(_areas)) if _areas else None,
+                max(_areas) if _areas else None,
+                round(min(_dbzs), 1) if _dbzs else None,
+                round(max(_dbzs), 1) if _dbzs else None,
+                track_diag.get("n_alive", 0),
+                track_diag.get("n_new", 0),
+                track_diag.get("n_continued", 0),
+                track_diag.get("n_purged", 0),
+                track_diag.get("n_split", 0),
+                track_diag.get("n_merge", 0),
+                track_diag.get("gate_rejects", 0),
+                track_diag.get("match_cost_mean"),
+            )
+
+            # Escribir registro JSONL (una línea por ciclo) para análisis posterior.
+            try:
+                _diag_path = Path(config.DIAG_LOG_PATH)
+                _diag_path.parent.mkdir(parents=True, exist_ok=True)
+                _record = {
+                    "frame_time": scan_time.isoformat(),
+                    "cycle_s": _cycle_s,
+                    "n_det": len(dets),
+                    "area_min": min(_areas) if _areas else None,
+                    "area_med": int(np.median(_areas)) if _areas else None,
+                    "area_max": max(_areas) if _areas else None,
+                    "dbz_min": round(min(_dbzs), 1) if _dbzs else None,
+                    "dbz_max": round(max(_dbzs), 1) if _dbzs else None,
+                    **track_diag,
+                }
+                with _diag_path.open("a", encoding="utf-8") as _f:
+                    _f.write(json.dumps(_record) + "\n")
+            except Exception as _exc_diag:
+                log.debug("Error escribiendo JSONL de diagnóstico: %s", _exc_diag)
+
             log.info(
                 "Frame radar OK: %s (age %.0f s) — ciclo %.1f s",
-                kmz_url.rsplit("/", 1)[-1], frame_age, time.monotonic() - cycle_start,
+                kmz_url.rsplit("/", 1)[-1], frame_age, _cycle_s,
             )
 
         except RadarUnavailable as exc:

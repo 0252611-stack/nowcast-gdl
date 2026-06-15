@@ -51,7 +51,18 @@ export async function getForecast(pointId) {
  *
  * @typedef {{ id: number, lat: number, lon: number, mean_dbz: number, area_px: number,
  *   velocity_kmh: number, bearing_deg: number, age_minutes: number,
- *   ring: number[][], track: number[][] }} TrackedCell
+ *   ring: number[][], track: number[][], quality: number }} TrackedCell
+ *
+ * @typedef {{ lat: number, lon: number, area_px: number, mean_dbz: number, max_dbz: number,
+ *   solidity: number, extent: number, ring: number[][] }} CellDetection
+ *
+ * @typedef {{ n_det: number, n_alive: number, n_new: number, n_continued: number,
+ *   n_purged: number, n_split: number, n_merge: number, gate_rejects: number,
+ *   match_cost_mean: number|null, cell_min_px: number, dbz_threshold: number,
+ *   match_max_km: number }} CellDebugDiag
+ *
+ * @typedef {{ frame_time: string|null, detections: CellDetection[],
+ *   tracks: TrackedCell[], diagnostics: CellDebugDiag }} CellDebug
  *
  * @typedef {{ lat: number, lon: number, dbz: number, bearing_deg: number, speed_kmh: number }} ContextEcho
  *
@@ -84,6 +95,15 @@ export async function getRadar(pointId) {
  */
 export async function getPrediction() {
   return fetchJson("/prediction");
+}
+
+/**
+ * Diagnóstico de detecciones crudas + tracks + métricas del último ciclo de tracking.
+ * Útil para inspeccionar la calidad de la detección de celdas.
+ * @returns {Promise<CellDebug>}
+ */
+export async function getCellDebug() {
+  return fetchJson("/radar/cells");
 }
 
 /**

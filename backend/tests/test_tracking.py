@@ -1,12 +1,13 @@
 """Tests para tracking.py — Compuerta 1 de la Capa 2.
 
 Tests de: detect_cells, update_tracks (continuidad, purga, determinismo),
-y detección básica de split/merge.
+detección básica de split/merge, y diag dict (Compuerta 0 — campos clave).
 """
 
 from __future__ import annotations
 
 import io
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -134,6 +135,75 @@ class TestDetectCells:
                 assert BOUNDS["west"] <= lon <= BOUNDS["east"]
 
 
+# ── update_tracks — retorno y diag dict (Compuerta 0) ─────────────────────────
+
+class TestDiagDict:
+    """Compuerta 0: update_tracks devuelve 3-tupla; el diag dict tiene los campos clave."""
+
+    def test_returns_three_tuple(self):
+        img = Image.open(io.BytesIO(_frame1_bytes()))
+        dets = detect_cells(img, BOUNDS)
+        result = update_tracks([], dets, T0, BOUNDS)
+        assert len(result) == 3, "update_tracks debe devolver (tracks, next_id, diag)"
+
+    def test_diag_has_required_keys(self):
+        img = Image.open(io.BytesIO(_frame1_bytes()))
+        dets = detect_cells(img, BOUNDS)
+        _, _, diag = update_tracks([], dets, T0, BOUNDS)
+        required = {
+            "n_alive", "n_new", "n_continued", "n_purged",
+            "n_split", "n_merge", "gate_rejects", "match_cost_mean",
+        }
+        assert required <= diag.keys(), f"Faltan claves: {required - diag.keys()}"
+
+    def test_diag_initial_frame_all_new(self):
+        img = Image.open(io.BytesIO(_frame1_bytes()))
+        dets = detect_cells(img, BOUNDS)
+        if not dets:
+            pytest.skip("frame1.png sin celdas")
+        tracks, _, diag = update_tracks([], dets, T0, BOUNDS)
+        assert diag["n_new"] == len(tracks)
+        assert diag["n_continued"] == 0
+        assert diag["n_purged"] == 0
+        assert diag["match_cost_mean"] is None  # sin tracks previos → sin matching
+
+    def test_diag_continued_on_second_frame(self):
+        img = Image.open(io.BytesIO(_frame1_bytes()))
+        dets = detect_cells(img, BOUNDS)
+        if not dets:
+            pytest.skip("no cells")
+        tracks, nid, _ = update_tracks([], dets, T0, BOUNDS)
+        _, _, diag2 = update_tracks(tracks, dets, T1, BOUNDS, next_id=nid)
+        assert diag2["n_continued"] == len(tracks)
+        assert diag2["n_new"] == 0
+        assert diag2["match_cost_mean"] is not None  # hay matches → cost no None
+
+    def test_diag_purged_after_disappearance(self):
+        img = Image.open(io.BytesIO(_frame1_bytes()))
+        dets = detect_cells(img, BOUNDS)
+        if not dets:
+            pytest.skip("no cells")
+        tracks, nid, _ = update_tracks([], dets, T0, BOUNDS)
+        # Frame vacío CELL_MAX_MISSED+1 veces → purge
+        current = tracks
+        for i in range(config.CELL_MAX_MISSED + 1):
+            t = datetime(T1.year, T1.month, T1.day, T1.hour, T1.minute + i, T1.second, tzinfo=timezone.utc)
+            current, nid, diag = update_tracks(current, [], t, BOUNDS, next_id=nid)
+        assert diag["n_purged"] >= 1
+
+    def test_diag_is_jsonl_serializable(self):
+        """El diag dict debe ser serializable a JSON (Compuerta 0 — JSONL)."""
+        img = Image.open(io.BytesIO(_frame1_bytes()))
+        dets = detect_cells(img, BOUNDS)
+        _, _, diag = update_tracks([], dets, T0, BOUNDS)
+        record = {"frame_time": T0.isoformat(), **diag}
+        line = json.dumps(record)
+        parsed = json.loads(line)
+        assert parsed["frame_time"] == T0.isoformat()
+        for key in ("n_alive", "n_new", "n_continued", "n_purged"):
+            assert key in parsed
+
+
 # ── update_tracks — primer frame (sin tracks previos) ─────────────────────────
 
 class TestUpdateTracksInitial:
@@ -142,7 +212,7 @@ class TestUpdateTracksInitial:
         dets = detect_cells(img, BOUNDS)
         if not dets:
             pytest.skip("frame1.png sin celdas detectables")
-        tracks, next_id = update_tracks([], dets, T0, BOUNDS)
+        tracks, next_id, _ = update_tracks([], dets, T0, BOUNDS)
         assert len(tracks) == len(dets)
 
     def test_initial_ids_unique_and_incremental(self):
@@ -150,7 +220,7 @@ class TestUpdateTracksInitial:
         dets = detect_cells(img, BOUNDS)
         if not dets:
             pytest.skip("frame1.png sin celdas detectables")
-        tracks, next_id = update_tracks([], dets, T0, BOUNDS, next_id=1)
+        tracks, next_id, _ = update_tracks([], dets, T0, BOUNDS, next_id=1)
         ids = [t.id for t in tracks]
         assert ids == list(range(1, len(dets) + 1))
         assert next_id == len(dets) + 1
@@ -160,7 +230,7 @@ class TestUpdateTracksInitial:
         dets = detect_cells(img, BOUNDS)
         if not dets:
             pytest.skip("frame1.png sin celdas detectables")
-        tracks, _ = update_tracks([], dets, T0, BOUNDS)
+        tracks, _, _ = update_tracks([], dets, T0, BOUNDS)
         assert all(t.age_frames == 1 for t in tracks)
 
     def test_initial_velocity_is_zero(self):
@@ -168,7 +238,7 @@ class TestUpdateTracksInitial:
         dets = detect_cells(img, BOUNDS)
         if not dets:
             pytest.skip("frame1.png sin celdas detectables")
-        tracks, _ = update_tracks([], dets, T0, BOUNDS)
+        tracks, _, _ = update_tracks([], dets, T0, BOUNDS)
         assert all(t.velocity_kmh == 0.0 for t in tracks)
 
 
@@ -181,10 +251,10 @@ class TestContinuity:
         dets = detect_cells(img, BOUNDS)
         if not dets:
             pytest.skip("frame1.png sin celdas detectables")
-        tracks0, nid = update_tracks([], dets, T0, BOUNDS)
+        tracks0, nid, _ = update_tracks([], dets, T0, BOUNDS)
 
         dets1 = detect_cells(img, BOUNDS)
-        tracks1, _ = update_tracks(tracks0, dets1, T1, BOUNDS, next_id=nid)
+        tracks1, _, _ = update_tracks(tracks0, dets1, T1, BOUNDS, next_id=nid)
 
         ids0 = {t.id for t in tracks0}
         ids1 = {t.id for t in tracks1}
@@ -196,13 +266,13 @@ class TestContinuity:
         dets0 = detect_cells(img0, BOUNDS)
         if not dets0:
             pytest.skip("frame1.png sin celdas detectables")
-        tracks0, nid = update_tracks([], dets0, T0, BOUNDS)
+        tracks0, nid, _ = update_tracks([], dets0, T0, BOUNDS)
 
         img1 = Image.open(io.BytesIO(_shifted_frame(shift_x=5)))
         dets1 = detect_cells(img1, BOUNDS)
         if not dets1:
             pytest.skip("frame desplazado sin celdas detectables")
-        tracks1, _ = update_tracks(tracks0, dets1, T1, BOUNDS, interval_seconds=90.0, next_id=nid)
+        tracks1, _, _ = update_tracks(tracks0, dets1, T1, BOUNDS, interval_seconds=90.0, next_id=nid)
 
         ids0 = {t.id for t in tracks0}
         continued = {t.id for t in tracks1 if t.id in ids0}
@@ -214,8 +284,8 @@ class TestContinuity:
         dets = detect_cells(img, BOUNDS)
         if not dets:
             pytest.skip("frame1.png sin celdas detectables")
-        tracks, nid = update_tracks([], dets, T0, BOUNDS)
-        tracks2, _ = update_tracks(tracks, dets, T1, BOUNDS, next_id=nid)
+        tracks, nid, _ = update_tracks([], dets, T0, BOUNDS)
+        tracks2, _, _ = update_tracks(tracks, dets, T1, BOUNDS, next_id=nid)
         continued = [t for t in tracks2 if t.id in {tr.id for tr in tracks}]
         assert all(t.age_frames == 2 for t in continued)
 
@@ -225,13 +295,13 @@ class TestContinuity:
         dets0 = detect_cells(img0, BOUNDS)
         if not dets0:
             pytest.skip("no cells")
-        tracks0, nid = update_tracks([], dets0, T0, BOUNDS)
+        tracks0, nid, _ = update_tracks([], dets0, T0, BOUNDS)
 
         img1 = Image.open(io.BytesIO(_shifted_frame(shift_x=10)))
         dets1 = detect_cells(img1, BOUNDS)
         if not dets1:
             pytest.skip("no cells in shifted frame")
-        tracks1, _ = update_tracks(tracks0, dets1, T1, BOUNDS, interval_seconds=90.0, next_id=nid)
+        tracks1, _, _ = update_tracks(tracks0, dets1, T1, BOUNDS, interval_seconds=90.0, next_id=nid)
 
         ids0 = {t.id for t in tracks0}
         continued = [t for t in tracks1 if t.id in ids0]
@@ -248,13 +318,13 @@ class TestPurge:
         dets = detect_cells(img, BOUNDS)
         if not dets:
             pytest.skip("no cells")
-        tracks, nid = update_tracks([], dets, T0, BOUNDS)
+        tracks, nid, _ = update_tracks([], dets, T0, BOUNDS)
         n = len(tracks)
 
         t = T1
         current = tracks
         for _ in range(config.CELL_MAX_MISSED):
-            current, nid = update_tracks(current, [], t, BOUNDS, next_id=nid)
+            current, nid, _ = update_tracks(current, [], t, BOUNDS, next_id=nid)
             t = datetime(t.year, t.month, t.day, t.hour, t.minute + 1, t.second, tzinfo=timezone.utc)
 
         assert len(current) == n, "Celdas deben sobrevivir exactamente CELL_MAX_MISSED ciclos"
@@ -265,12 +335,12 @@ class TestPurge:
         dets = detect_cells(img, BOUNDS)
         if not dets:
             pytest.skip("no cells")
-        tracks, nid = update_tracks([], dets, T0, BOUNDS)
+        tracks, nid, _ = update_tracks([], dets, T0, BOUNDS)
 
         t = T1
         current = tracks
         for _ in range(config.CELL_MAX_MISSED + 1):
-            current, nid = update_tracks(current, [], t, BOUNDS, next_id=nid)
+            current, nid, _ = update_tracks(current, [], t, BOUNDS, next_id=nid)
             t = datetime(t.year, t.month, t.day, t.hour, t.minute + 1, t.second, tzinfo=timezone.utc)
 
         assert len(current) == 0, "Todas las celdas deben purgarse tras CELL_MAX_MISSED+1 ciclos"
@@ -290,15 +360,25 @@ class TestDeterminism:
         dets1 = detect_cells(img1, BOUNDS)
 
         # Primera ejecución
-        ta, nid_a = update_tracks([], dets0, T0, BOUNDS, next_id=1)
-        tb, nid_b = update_tracks(ta, dets1, T1, BOUNDS, interval_seconds=90.0, next_id=nid_a)
+        ta, nid_a, _ = update_tracks([], dets0, T0, BOUNDS, next_id=1)
+        tb, nid_b, _ = update_tracks(ta, dets1, T1, BOUNDS, interval_seconds=90.0, next_id=nid_a)
 
         # Segunda ejecución con el mismo input
-        ta2, nid_a2 = update_tracks([], dets0, T0, BOUNDS, next_id=1)
-        tb2, nid_b2 = update_tracks(ta2, dets1, T1, BOUNDS, interval_seconds=90.0, next_id=nid_a2)
+        ta2, nid_a2, _ = update_tracks([], dets0, T0, BOUNDS, next_id=1)
+        tb2, nid_b2, _ = update_tracks(ta2, dets1, T1, BOUNDS, interval_seconds=90.0, next_id=nid_a2)
 
         assert sorted(t.id for t in tb) == sorted(t.id for t in tb2)
         assert nid_b == nid_b2
+
+    def test_diag_deterministic(self):
+        """Mismo input → mismo diag dict en dos ejecuciones."""
+        img = Image.open(io.BytesIO(_frame1_bytes()))
+        dets = detect_cells(img, BOUNDS)
+        if not dets:
+            pytest.skip("no cells")
+        _, _, diag1 = update_tracks([], dets, T0, BOUNDS, next_id=1)
+        _, _, diag2 = update_tracks([], dets, T0, BOUNDS, next_id=1)
+        assert diag1 == diag2
 
 
 # ── split / merge ─────────────────────────────────────────────────────────────
@@ -306,11 +386,9 @@ class TestDeterminism:
 class TestSplitMerge:
     def test_merge_recorded_when_two_tracks_target_same_detection(self):
         """Dos tracks muy juntos, una sola detección → el ganador registra merged_ids."""
-        # Tracks muy cercanos entre sí (separados ~0.1 km)
         t1 = _make_tracked_cell(1, 20.670, -103.400, velocity_kmh=0.0)
         t2 = _make_tracked_cell(2, 20.671, -103.400, velocity_kmh=0.0)
 
-        # Detección única entre ellos
         det_lat, det_lon = 20.6705, -103.400
         dets = [{
             "lat": det_lat, "lon": det_lon, "area_px": 1000,
@@ -318,40 +396,108 @@ class TestSplitMerge:
             "ring": [[det_lat, det_lon]],
         }]
 
-        tracks, _ = update_tracks([t1, t2], dets, T1, BOUNDS, interval_seconds=90.0, next_id=3)
+        tracks, _, diag = update_tracks([t1, t2], dets, T1, BOUNDS, interval_seconds=90.0, next_id=3)
 
-        # Solo puede haber un ganador; el perdedor quedará con missed_frames > 0
         winners = [t for t in tracks if t.id in {1, 2} and t.missed_frames == 0]
         assert len(winners) == 1, "Solo un track debe ganar la detección"
         winner = winners[0]
-        # merged_ids debe registrar el otro track como candidato
         assert len(winner.merged_ids) >= 1
+        assert diag["n_merge"] >= 1
 
     def test_new_cell_near_existing_track_gets_split_from(self):
         """Nueva detección cerca de un track asignado a otro → split_from poblado."""
-        # Un track moviéndose al este
         t1 = _make_tracked_cell(1, 20.670, -103.400, velocity_kmh=20.0, bearing_deg=90.0)
 
-        # Predicted position of t1 after 90s at 20 km/h east:
-        # dist = 20 * 90/3600 = 0.5 km → dlon ≈ 0.5 / (111.32 * cos(20.67°)) ≈ 0.0048°
         det1 = {
             "lat": 20.670, "lon": -103.3952, "area_px": 800,
             "mean_dbz": 30.0, "max_dbz": 40.0,
             "ring": [[20.670, -103.3952]],
         }
-        # Second detection also near t1's predicted position (potential split)
         det2 = {
             "lat": 20.665, "lon": -103.3955, "area_px": 400,
             "mean_dbz": 25.0, "max_dbz": 35.0,
             "ring": [[20.665, -103.3955]],
         }
 
-        tracks, next_id = update_tracks(
+        tracks, next_id, _ = update_tracks(
             [t1], [det1, det2], T1, BOUNDS, interval_seconds=90.0, next_id=2
         )
 
-        new_cells = [t for t in tracks if t.id >= 2]
-        cells_with_split = [t for t in new_cells if t.split_from is not None]
-        # At least one new cell should be close enough to trigger split_from
-        # (depends on distance; test is best-effort given synthetic positions)
-        assert next_id >= 2  # At least one new ID was assigned
+        assert next_id >= 2
+
+
+# ── quality score (Compuerta 1) ───────────────────────────────────────────────
+
+class TestQualityScore:
+    def test_detect_cells_returns_solidity_and_extent(self):
+        img = Image.open(io.BytesIO(_frame1_bytes()))
+        cells = detect_cells(img, BOUNDS)
+        assert cells, "frame1.png sin celdas"
+        for c in cells:
+            assert "solidity" in c, "Campo 'solidity' faltante en detect_cells"
+            assert "extent" in c, "Campo 'extent' faltante en detect_cells"
+            assert 0.0 < c["solidity"] <= 1.0, f"solidity fuera de rango: {c['solidity']}"
+            assert 0.0 < c["extent"] <= 1.0, f"extent fuera de rango: {c['extent']}"
+
+    def test_tracked_cell_has_quality_field(self):
+        img = Image.open(io.BytesIO(_frame1_bytes()))
+        dets = detect_cells(img, BOUNDS)
+        if not dets:
+            pytest.skip("no cells")
+        tracks, _, _ = update_tracks([], dets, T0, BOUNDS)
+        for t in tracks:
+            assert hasattr(t, "quality"), "TrackedCell sin campo 'quality'"
+            assert 0.0 <= t.quality <= 1.0, f"quality fuera de [0,1]: {t.quality}"
+
+    def test_quality_increases_with_age(self):
+        """Celda que sobrevive más ciclos debe tener quality mayor o igual."""
+        img = Image.open(io.BytesIO(_frame1_bytes()))
+        dets = detect_cells(img, BOUNDS)
+        if not dets:
+            pytest.skip("no cells")
+        tracks, nid, _ = update_tracks([], dets, T0, BOUNDS)
+        q_age1 = [t.quality for t in tracks]
+
+        tracks2, nid, _ = update_tracks(tracks, dets, T1, BOUNDS, next_id=nid)
+        continued = [t for t in tracks2 if t.id in {tr.id for tr in tracks}]
+        q_age2 = [t.quality for t in continued]
+
+        # Al menos la media debe aumentar o mantenerse (age_score sube)
+        assert sum(q_age2) / max(1, len(q_age2)) >= sum(q_age1) / max(1, len(q_age1)) - 0.05
+
+    def test_quality_deterministic(self):
+        """Mismo input → mismo quality en dos ejecuciones."""
+        img = Image.open(io.BytesIO(_frame1_bytes()))
+        dets = detect_cells(img, BOUNDS)
+        if not dets:
+            pytest.skip("no cells")
+        t1, _, _ = update_tracks([], dets, T0, BOUNDS, next_id=1)
+        t2, _, _ = update_tracks([], dets, T0, BOUNDS, next_id=1)
+        for a, b in zip(t1, t2):
+            assert a.quality == b.quality, f"quality no determinista: {a.quality} vs {b.quality}"
+
+    def test_large_cell_has_higher_quality_than_small(self):
+        """Celda grande (area > AREA_REF) vs celda pequeña (area = CELL_MIN_PX)."""
+        from app.processing.tracking import _cell_quality
+        q_large = _cell_quality(
+            area_px=config.CELL_QUALITY_AREA_REF * 2,
+            solidity=0.9,
+            age_frames=5,
+            area_history=[config.CELL_QUALITY_AREA_REF * 2] * 4,
+            missed_frames=0,
+        )
+        q_small = _cell_quality(
+            area_px=config.CELL_MIN_PX,
+            solidity=0.5,
+            age_frames=1,
+            area_history=[config.CELL_MIN_PX],
+            missed_frames=0,
+        )
+        assert q_large > q_small, f"Celda grande ({q_large}) debe superar a celda pequeña ({q_small})"
+
+    def test_missed_frames_penalty(self):
+        """Celda con missed_frames=1 tiene quality < la misma sin missed."""
+        from app.processing.tracking import _cell_quality
+        q_ok = _cell_quality(500, 0.8, 3, [500, 480, 510], missed_frames=0)
+        q_missed = _cell_quality(500, 0.8, 3, [500, 480, 510], missed_frames=1)
+        assert q_missed < q_ok

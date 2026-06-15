@@ -255,16 +255,19 @@ function computeMeshCells(ring, vectors) {
   return cells
 }
 
-/** Color del anillo/trayectoria de una celda rastreada según reflectividad media */
-function trackedCellColor(mean_dbz) {
-  if (mean_dbz >= 45) return "#7C3AED"  // violeta intenso — eco fuerte
-  if (mean_dbz >= 30) return "#8B5CF6"  // violeta medio — moderado
-  return "#A78BFA"                       // lavanda — ligero
+/**
+ * Escala secuencial de calidad 0→1: rojo (baja) → ámbar → verde (alta).
+ * Accesible: además del color se muestra el número en el tooltip.
+ */
+function qualityColor(q) {
+  if (q >= 0.7) return "#16A34A"   // verde — calidad alta
+  if (q >= 0.4) return "#D97706"   // ámbar — calidad media
+  return "#DC2626"                  // rojo — calidad baja
 }
 
-/** Flecha violeta para indicar la dirección de movimiento de una celda rastreada */
-function trackedCellArrowIcon(bearing, mean_dbz) {
-  const color = trackedCellColor(mean_dbz)
+/** Flecha cuyo color refleja la calidad (quality score) de la celda */
+function trackedCellArrowIcon(bearing, quality) {
+  const color = qualityColor(quality)
   const svg = `<svg width="20" height="20" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Dirección celda">
     <g transform="rotate(${bearing},10,10)">
       <polygon points="10,2 17,17 10,13 3,17" fill="${color}" stroke="#FFFFFF" stroke-width="1.5" stroke-linejoin="round"/>
@@ -357,6 +360,8 @@ export default function CellMap({
   showFieldVectors = false,  // solo flechas del campo interior, sin rectángulos (toggle en /mapa)
   trackedCells     = [],     // list[TrackedCellSchema] — celdas rastreadas con identidad
   showCells        = false,  // toggle de la capa de celdas rastreadas
+  rawDetections    = [],     // list[CellDetection] — detecciones crudas pre-tracking (debug)
+  showRawDetections = false, // toggle de la capa de detecciones crudas
 }) {
   const center = focusPoint
     ? [focusPoint.lat, focusPoint.lon]
@@ -542,12 +547,37 @@ export default function CellMap({
         />
       ))}
 
-      {/* Celdas rastreadas (Capa 2) — anillo, trayectoria histórica y etiqueta de identidad */}
+      {/* Detecciones crudas (pre-tracking) — polígonos tenues para debug */}
+      {showRawDetections && !compact && rawDetections.map((det, i) => (
+        <Fragment key={`det-${i}`}>
+          {det.ring.length >= 3 && (
+            <Polygon
+              positions={det.ring}
+              pathOptions={{
+                color: "#94A3B8", weight: 1, opacity: 0.7,
+                fill: true, fillColor: "#94A3B8", fillOpacity: 0.05,
+                dashArray: "4 4",
+              }}
+            >
+              <Tooltip>
+                <div style={{ fontSize: "11px", lineHeight: 1.5 }}>
+                  <strong>Detección cruda</strong><br />
+                  {det.mean_dbz.toFixed(0)} dBZ · {det.area_px} px<br />
+                  Solidity: {(det.solidity * 100).toFixed(0)}% · Extent: {(det.extent * 100).toFixed(0)}%
+                </div>
+              </Tooltip>
+            </Polygon>
+          )}
+        </Fragment>
+      ))}
+
+      {/* Celdas rastreadas (Capa 2) — coloreadas por quality score */}
       {showCells && !compact && trackedCells.map(cell => {
-        const ringColor = trackedCellColor(cell.mean_dbz)
+        const q = typeof cell.quality === "number" ? cell.quality : 0
+        const ringColor = qualityColor(q)
         return (
           <Fragment key={`tc-${cell.id}`}>
-            {/* Polígono del anillo de la celda */}
+            {/* Polígono del anillo coloreado por quality */}
             <Polygon
               positions={cell.ring}
               pathOptions={{
@@ -556,7 +586,7 @@ export default function CellMap({
                 opacity:     0.9,
                 fill:        true,
                 fillColor:   ringColor,
-                fillOpacity: 0.08,
+                fillOpacity: 0.10,
               }}
             />
 
@@ -568,14 +598,15 @@ export default function CellMap({
               />
             )}
 
-            {/* Flecha de velocidad + tooltip de diagnóstico */}
+            {/* Flecha de velocidad + tooltip con quality */}
             <Marker
               position={[cell.lat, cell.lon]}
-              icon={trackedCellArrowIcon(cell.bearing_deg, cell.mean_dbz)}
+              icon={trackedCellArrowIcon(cell.bearing_deg, q)}
             >
               <Tooltip>
                 <div style={{ fontSize: "12px", lineHeight: 1.6 }}>
                   <strong>Celda #{cell.id}</strong><br />
+                  Calidad: {(q * 100).toFixed(0)}%<br />
                   {cell.mean_dbz.toFixed(0)} dBZ · {cell.velocity_kmh.toFixed(0)} km/h · {Math.round(cell.bearing_deg)}°<br />
                   Edad: {cell.age_minutes} min · {cell.area_px} px
                 </div>

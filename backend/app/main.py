@@ -19,9 +19,16 @@ from pydantic import BaseModel, Field
 from app import config
 from app.nowcast.engine import estimate_arrival
 from app.processing.motion import compute_cell_motion, find_context_echoes, find_echo_contours, sample_ring_vectors
-from app.processing.tracking import TrackedCell, detect_cells, update_tracks
+from app.processing.tracking import TrackedCell, detect_cells, detection_mask, update_tracks
 from app.scheduler import RadarState, run_forecast_loop, run_radar_loop
-from app.schemas import ContextEcho, TrackedCellSchema, WindSample
+from app.schemas import (
+    CellDebugDiagSchema,
+    CellDebugSchema,
+    CellDetectionSchema,
+    ContextEcho,
+    TrackedCellSchema,
+    WindSample,
+)
 from app.sources.openmeteo import (
     fetch_ensemble,
     fetch_forecast,
@@ -70,12 +77,19 @@ def _serialize_tracked_cells(
             "age_minutes": age_min,
             "ring": c.ring,
             "track": track,
+            "quality": c.quality,
         })
     return out
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Configurar nivel de logging desde LOG_LEVEL antes de que el scheduler emita.
+    # Se ajusta el root logger para que los módulos hijos (app.*) sean visibles.
+    # uvicorn configura sus propios handlers, pero no toca el root level, por lo que
+    # sin este ajuste el root queda en WARNING y los INFO/DEBUG de tracking no aparecen.
+    logging.root.setLevel(getattr(logging, config.LOG_LEVEL.upper(), logging.INFO))
+
     conn = init_db(config.DB_PATH)
     seed_points(conn, config.POINTS)
     state = RadarState()
@@ -164,6 +178,69 @@ async def get_radar_image():
         raise HTTPException(404, "No hay frames de radar disponibles")
     return Response(
         content=frames[0][0],
+        media_type="image/png",
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
+@app.get("/radar/cells", response_model=CellDebugSchema)
+async def get_radar_cells():
+    """Detecciones crudas + tracks rastreados + diagnóstico del último ciclo de tracking.
+
+    Endpoint de observabilidad read-only (sin autenticación): permite inspeccionar
+    la calidad de la detección de celdas y el matching entre ciclos.
+    """
+    state: RadarState = app.state.radar_state
+    frame_time = (
+        state.last_frame_time.isoformat() if state.last_frame_time else None
+    )
+    tracks_out = _serialize_tracked_cells(state.tracked_cells, state._cell_interval_s)
+    diag = state.last_track_diag
+    return CellDebugSchema(
+        frame_time=frame_time,
+        detections=[CellDetectionSchema(**d) for d in state.last_detections],
+        tracks=[TrackedCellSchema(**t) for t in tracks_out],
+        diagnostics=CellDebugDiagSchema(
+            n_det=len(state.last_detections),
+            n_alive=diag.get("n_alive", 0),
+            n_new=diag.get("n_new", 0),
+            n_continued=diag.get("n_continued", 0),
+            n_purged=diag.get("n_purged", 0),
+            n_split=diag.get("n_split", 0),
+            n_merge=diag.get("n_merge", 0),
+            gate_rejects=diag.get("gate_rejects", 0),
+            match_cost_mean=diag.get("match_cost_mean"),
+            cell_min_px=config.CELL_MIN_PX,
+            dbz_threshold=config.DBZ_THRESHOLD,
+            match_max_km=config.CELL_MATCH_MAX_KM,
+        ),
+    )
+
+
+@app.get("/radar/cells/mask.png")
+async def get_radar_cells_mask():
+    """Máscara binaria de detección del último frame como PNG blanco/negro.
+
+    Muestra exactamente qué píxeles pasan el umbral dBZ y la morfología que
+    produce detect_cells. Útil para calibrar CELL_MIN_PX y DBZ_THRESHOLD.
+    """
+    frames = get_recent_frames(app.state.db, 1)
+    if not frames:
+        raise HTTPException(404, "No hay frames de radar disponibles")
+    state: RadarState = app.state.radar_state
+    if not state.last_bounds:
+        raise HTTPException(404, "Bounds del radar aún no disponibles (warmup)")
+    img = Image.open(io.BytesIO(frames[0][0]))
+    mask_arr = detection_mask(img, state.last_bounds)
+    # Convertir a imagen RGB: máscara en blanco, fondo transparente
+    rgba = Image.new("RGBA", (mask_arr.shape[1], mask_arr.shape[0]), (0, 0, 0, 0))
+    white_layer = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
+    mask_pil = Image.fromarray(mask_arr, mode="L")
+    rgba.paste(white_layer, mask=mask_pil)
+    buf = io.BytesIO()
+    rgba.save(buf, format="PNG")
+    return Response(
+        content=buf.getvalue(),
         media_type="image/png",
         headers={"Cache-Control": "no-cache"},
     )

@@ -219,3 +219,110 @@ def test_nowcast_result_has_new_tracking_fields(client):
         assert "cell_id" in nowcast
         assert "cell_age_minutes" in nowcast
         assert "leading_edge_distance_km" in nowcast
+
+
+# ── Compuerta 2 — /radar/cells ────────────────────────────────────────────────
+
+def test_radar_cells_endpoint_exists(client):
+    """/radar/cells responde 200 (sin frames = estado vacío)."""
+    c, _, _ = client
+    resp = c.get("/radar/cells")
+    assert resp.status_code == 200
+
+
+def test_radar_cells_shape(client):
+    """/radar/cells devuelve detections, tracks, diagnostics."""
+    c, _, _ = client
+    body = c.get("/radar/cells").json()
+    assert "detections" in body
+    assert "tracks" in body
+    assert "diagnostics" in body
+    assert isinstance(body["detections"], list)
+    assert isinstance(body["tracks"], list)
+    diag = body["diagnostics"]
+    for key in ("n_det", "n_alive", "n_new", "n_continued", "n_purged",
+                "n_split", "n_merge", "gate_rejects", "cell_min_px",
+                "dbz_threshold", "match_max_km"):
+        assert key in diag, f"Falta clave en diagnostics: {key}"
+
+
+def test_radar_cells_with_injected_data(client):
+    """Con detecciones y tracks inyectados, /radar/cells los devuelve correctamente."""
+    from app.processing.tracking import TrackedCell
+    from datetime import datetime, timezone
+
+    c, _, state = client
+    t0 = datetime(2026, 6, 15, 2, 0, 0, tzinfo=timezone.utc)
+
+    det = {
+        "lat": 20.67, "lon": -103.40, "area_px": 400,
+        "mean_dbz": 32.0, "max_dbz": 48.0,
+        "solidity": 0.80, "extent": 0.65,
+        "ring": [[20.68, -103.41], [20.66, -103.41]],
+    }
+    state.last_detections = [det]
+    state.last_frame_time = t0
+    state.last_track_diag = {
+        "n_alive": 1, "n_new": 1, "n_continued": 0, "n_purged": 0,
+        "n_split": 0, "n_merge": 0, "gate_rejects": 0, "match_cost_mean": None,
+    }
+    cell = TrackedCell(
+        id=7, lat=20.67, lon=-103.40, area_px=400,
+        mean_dbz=32.0, max_dbz=48.0,
+        ring=[[20.68, -103.41], [20.66, -103.41]],
+        velocity_kmh=25.0, bearing_deg=270.0,
+        centroid_history=[(20.67, -103.40, t0)],
+        area_history=[400],
+        age_frames=1, first_seen=t0, last_seen=t0,
+        quality=0.55,
+    )
+    state.tracked_cells = [cell]
+
+    body = c.get("/radar/cells").json()
+    assert body["frame_time"] is not None
+    assert len(body["detections"]) == 1
+    assert body["detections"][0]["solidity"] == pytest.approx(0.80)
+    assert len(body["tracks"]) == 1
+    assert body["tracks"][0]["quality"] == pytest.approx(0.55)
+    assert body["diagnostics"]["n_det"] == 1
+
+
+# ── Compuerta 3 — /radar/cells/mask.png ───────────────────────────────────────
+
+def test_radar_cells_mask_404_without_frames(client):
+    """/radar/cells/mask.png devuelve 404 si no hay frames."""
+    c, _, _ = client
+    resp = c.get("/radar/cells/mask.png")
+    assert resp.status_code == 404
+
+
+def test_radar_cells_mask_returns_png_with_frame(client):
+    """Con bounds inyectados y un frame real, /radar/cells/mask.png devuelve image/png."""
+    import io as _io
+    from pathlib import Path
+    from PIL import Image as _Image
+
+    c, conn, state = client
+    FIXTURES = Path(__file__).parent / "fixtures"
+    frame_bytes = (FIXTURES / "frame1.png").read_bytes()
+
+    # Guardar un frame en la BD para que get_recent_frames lo encuentre
+    from app.storage import save_frame
+    from datetime import datetime, timezone
+    t0 = datetime(2026, 6, 15, 2, 0, 0, tzinfo=timezone.utc)
+    save_frame(conn, "http://example.com/MEXI_ZH_20260615_020000.kmz", t0, frame_bytes)
+
+    state.last_bounds = {
+        "north": 22.03030437021881,
+        "south": 19.32059531316582,
+        "east": -101.9462411978663,
+        "west": -104.8254262826025,
+    }
+
+    resp = c.get("/radar/cells/mask.png")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "image/png"
+    # Verificar que la respuesta es una imagen PNG válida
+    img = _Image.open(_io.BytesIO(resp.content))
+    assert img.format == "PNG"
+    assert img.size[0] > 0 and img.size[1] > 0

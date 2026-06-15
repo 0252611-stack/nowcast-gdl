@@ -214,3 +214,52 @@ class TrackedCellSchema(BaseModel):
         default_factory=list,
         description="Historial de centroides [[lat,lon],...] para trazar la trayectoria"
     )
+    quality: float = Field(
+        default=0.0, ge=0.0, le=1.0,
+        description="Quality score 0–1 (tamaño + forma + persistencia + estabilidad)"
+    )
+
+
+class CellDetectionSchema(BaseModel):
+    """Detección cruda de celda (pre-tracking). Solo para el endpoint de debug /radar/cells."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    lat: float = Field(..., ge=-90, le=90)
+    lon: float = Field(..., ge=-180, le=180)
+    area_px: int = Field(..., ge=0)
+    mean_dbz: float
+    max_dbz: float
+    solidity: float = Field(..., ge=0.0, le=1.0)
+    extent: float = Field(..., ge=0.0, le=1.0)
+    ring: list[list[float]]
+
+
+class CellDebugDiagSchema(BaseModel):
+    """Diagnóstico del ciclo de tracking. Solo para el endpoint /radar/cells."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    n_det: int
+    n_alive: int
+    n_new: int
+    n_continued: int
+    n_purged: int
+    n_split: int
+    n_merge: int
+    gate_rejects: int
+    match_cost_mean: float | None
+    cell_min_px: int
+    dbz_threshold: float
+    match_max_km: float
+
+
+class CellDebugSchema(BaseModel):
+    """Respuesta completa del endpoint /radar/cells (detecciones + tracks + diagnóstico)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    frame_time: str | None
+    detections: list[CellDetectionSchema]
+    tracks: list[TrackedCellSchema]
+    diagnostics: CellDebugDiagSchema

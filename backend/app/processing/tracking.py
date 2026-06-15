@@ -66,6 +66,8 @@ class TrackedCell:
     merged_ids: list = field(default_factory=list)
     # Contador interno de ciclos sin match (para purga)
     missed_frames: int = 0
+    # Quality score 0–1: diagnóstico de calidad de detección y tracking (no altera ETA)
+    quality: float = 0.0
 
 
 def detect_cells(
@@ -139,11 +141,24 @@ def detect_cells(
         mean_dbz = float(pixel_dbzs.mean())
         max_dbz = float(pixel_dbzs.max())
 
-        # Contorno geográfico del componente
+        # Contorno + métricas de forma (solidity, extent) para quality score
         ring: list[list[float]] = []
+        solidity: float = 1.0
+        extent: float = 1.0
         contours_c, _ = cv2.findContours(comp_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         if contours_c:
             c = max(contours_c, key=cv2.contourArea)
+            # Solidity: área real / área del convex hull (1.0 = forma convexa perfecta).
+            # Clip a 1.0: cv2.contourArea puede dar hull_area < area real por artefactos subpíxel.
+            hull = cv2.convexHull(c)
+            hull_area = cv2.contourArea(hull)
+            if hull_area > 0:
+                solidity = min(1.0, float(area) / hull_area)
+            # Extent: área real / área del bounding box (1.0 = rectángulo lleno).
+            _, _, bw, bh = cv2.boundingRect(c)
+            bbox_area = bw * bh
+            if bbox_area > 0:
+                extent = min(1.0, float(area) / bbox_area)
             simplified = cv2.approxPolyDP(c, 0.3, True)
             if len(simplified) >= 3:
                 for pt in simplified:
@@ -160,9 +175,48 @@ def detect_cells(
             "mean_dbz": round(mean_dbz, 1),
             "max_dbz": round(max_dbz, 1),
             "ring": ring,
+            "solidity": round(solidity, 3),
+            "extent": round(extent, 3),
         })
 
     return cells
+
+
+def detection_mask(image: Image.Image, bounds: dict[str, float]) -> np.ndarray:
+    """Genera la máscara binaria (uint8 0/255) que produce detect_cells.
+
+    Aplica el mismo pipeline: colormap LUT → dBZ ≥ DBZ_THRESHOLD → MORPH_CLOSE
+    → dilate. Devuelve array H×W uint8 con 255 en los píxeles que se convierten
+    en celdas y 0 en el resto.  Útil para el endpoint /radar/cells/mask.png.
+    """
+    from app.processing.colormap import DBZ_MIN
+
+    arr = np.array(image.convert("RGBA"))
+    H, W = arr.shape[:2]
+    alpha = arr[:, :, 3]
+
+    ys, xs = np.where(alpha > 0)
+    if len(xs) == 0:
+        return np.zeros((H, W), dtype=np.uint8)
+
+    cmap = _get_colormap()
+    cmap_colors = np.array(list(cmap.keys()), dtype=np.float32)
+    cmap_dbzs = np.array(list(cmap.values()), dtype=np.float32)
+
+    rgb = arr[ys, xs, :3].astype(np.float32)
+    diffs = rgb[:, np.newaxis, :] - cmap_colors[np.newaxis, :, :]
+    dists_sq = (diffs ** 2).sum(axis=2)
+    best_idx = dists_sq.argmin(axis=1)
+    dbzs = cmap_dbzs[best_idx]
+
+    dbz_grid = np.full((H, W), DBZ_MIN, dtype=np.float32)
+    dbz_grid[ys, xs] = dbzs
+    mask = ((dbz_grid >= config.DBZ_THRESHOLD) & (alpha > 0)).astype(np.uint8) * 255
+
+    k = np.ones((3, 3), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k)
+    mask = cv2.dilate(mask, k, iterations=1)
+    return mask
 
 
 def _predict_position(
@@ -182,6 +236,46 @@ def _predict_position(
     return lat + dlat, lon + dlon
 
 
+def _cell_quality(
+    area_px: int,
+    solidity: float,
+    age_frames: int,
+    area_history: list[int],
+    missed_frames: int,
+) -> float:
+    """Quality score determinista 0–1 para una celda rastreada.
+
+    Función de: tamaño normalizado, compacidad de forma, persistencia y
+    estabilidad del área histórica. Penalización por ciclos sin match.
+    Solo diagnóstico — no altera la ETA.
+    """
+    area_ref = max(1, config.CELL_QUALITY_AREA_REF)
+    age_ref = max(1, config.CELL_QUALITY_AGE_REF)
+
+    area_score = min(1.0, area_px / area_ref)
+    solidity_score = max(0.0, min(1.0, solidity))
+    age_score = min(1.0, (age_frames - 1) / age_ref)
+
+    # Estabilidad: coeficiente de variación del área histórica (CV bajo → score alto)
+    if len(area_history) >= 2:
+        mean_a = sum(area_history) / len(area_history)
+        std_a = math.sqrt(sum((x - mean_a) ** 2 for x in area_history) / len(area_history))
+        cv = std_a / max(1, mean_a)
+        stability_score = max(0.0, 1.0 - cv)
+    else:
+        stability_score = 0.0  # un solo frame → sin historial de estabilidad
+
+    raw = (
+        config.CELL_QUALITY_W_AREA * area_score
+        + config.CELL_QUALITY_W_SOLIDITY * solidity_score
+        + config.CELL_QUALITY_W_AGE * age_score
+        + config.CELL_QUALITY_W_STABILITY * stability_score
+    )
+    # Penalización por ciclos sin match (celda parpadeante)
+    penalty = 0.15 * missed_frames
+    return round(max(0.0, min(1.0, raw - penalty)), 3)
+
+
 def update_tracks(
     prev_tracks: list[TrackedCell],
     detections: list[dict],
@@ -189,11 +283,12 @@ def update_tracks(
     bounds: dict[str, float],
     interval_seconds: float = 90.0,
     next_id: int = 1,
-) -> tuple[list[TrackedCell], int]:
+) -> tuple[list[TrackedCell], int, dict]:
     """Matching greedy con gating entre tracks previos y nuevas detecciones.
 
     Determinista: ordena los pares válidos por costo (distancia + penalización
-    de área); sin aleatoriedad. Devuelve (new_tracks, updated_next_id).
+    de área); sin aleatoriedad. Devuelve (new_tracks, updated_next_id, diag)
+    donde diag es un dict con métricas del ciclo de tracking para observabilidad.
     """
     max_km = config.CELL_MATCH_MAX_KM
     max_missed = config.CELL_MAX_MISSED
@@ -205,13 +300,15 @@ def update_tracks(
         for t in prev_tracks
     }
 
-    # Construir lista de pares válidos (dentro del gate) con su costo
+    # Construir lista de pares válidos (dentro del gate) con su costo; contar rechazos
     valid_pairs: list[tuple[float, int, int]] = []  # (cost, track_id, det_idx)
+    gate_rejects = 0
     for t in prev_tracks:
         p_lat, p_lon = predictions[t.id]
         for d_idx, det in enumerate(detections):
             dist = _geo_dist_km(p_lat, p_lon, det["lat"], det["lon"], bounds)
             if dist > max_km:
+                gate_rejects += 1
                 continue
             area_pen = min(2.0, abs(math.log(max(1, det["area_px"]) / max(1, t.area_px))))
             cost = dist + 0.5 * area_pen
@@ -237,8 +334,20 @@ def update_tracks(
         assigned_tracks.add(t_id)
         assigned_dets.add(d_idx)
 
+    # Costo medio de los pares efectivamente asignados (diagnóstico de calidad del matching)
+    cost_by_pair = {(t_id, d_idx): cost for cost, t_id, d_idx in valid_pairs}
+    matched_costs = [
+        cost_by_pair[(t_id, d_idx)]
+        for t_id, d_idx in assignments.items()
+        if (t_id, d_idx) in cost_by_pair
+    ]
+    match_cost_mean: float | None = round(sum(matched_costs) / len(matched_costs), 2) if matched_costs else None
+
     track_by_id = {t.id: t for t in prev_tracks}
     new_tracks: list[TrackedCell] = []
+    n_purged = 0
+    n_merge = 0
+    n_split = 0
 
     # Actualizar tracks con match
     for t in prev_tracks:
@@ -270,10 +379,13 @@ def update_tracks(
             all_claimants = det_claimants.get(d_idx, [])
             merged_ids = [oid for oid in all_claimants if oid != t.id]
             if merged_ids:
+                n_merge += 1
                 log.info(
                     "Merge: celda %d absorbe candidatos %s en %s", t.id, merged_ids, scan_time
                 )
 
+            _new_area_hist = (t.area_history + [det["area_px"]])[-history_len:]
+            _new_age = t.age_frames + 1
             new_tracks.append(TrackedCell(
                 id=t.id,
                 lat=det["lat"],
@@ -285,14 +397,21 @@ def update_tracks(
                 velocity_kmh=round(new_speed, 1),
                 bearing_deg=round(new_bearing, 1),
                 centroid_history=(t.centroid_history + [(det["lat"], det["lon"], scan_time)])[-history_len:],
-                area_history=(t.area_history + [det["area_px"]])[-history_len:],
-                age_frames=t.age_frames + 1,
+                area_history=_new_area_hist,
+                age_frames=_new_age,
                 first_seen=t.first_seen,
                 last_seen=scan_time,
                 accel_kmh_per_min=round(accel, 2),
                 split_from=t.split_from,
                 merged_ids=merged_ids,
                 missed_frames=0,
+                quality=_cell_quality(
+                    det["area_px"],
+                    det.get("solidity", 1.0),
+                    _new_age,
+                    _new_area_hist,
+                    0,
+                ),
             ))
         else:
             # Sin match: incrementar contador de ausencias
@@ -301,6 +420,7 @@ def update_tracks(
                 t.last_seen = scan_time
                 new_tracks.append(t)
             else:
+                n_purged += 1
                 log.debug("Celda %d purgada tras %d ciclos sin match.", t.id, t.missed_frames)
 
     # Nuevas detecciones sin track previo → nuevos tracks
@@ -317,6 +437,7 @@ def update_tracks(
             dist = _geo_dist_km(p_lat, p_lon, det["lat"], det["lon"], bounds)
             if dist <= max_km:
                 split_from = t.id
+                n_split += 1
                 log.info(
                     "Split: nueva celda %d cerca de celda %d en %s", next_id, t.id, scan_time
                 )
@@ -340,6 +461,13 @@ def update_tracks(
             split_from=split_from,
             merged_ids=[],
             missed_frames=0,
+            quality=_cell_quality(
+                det["area_px"],
+                det.get("solidity", 1.0),
+                1,
+                [det["area_px"]],
+                0,
+            ),
         ))
         next_id += 1
 
@@ -352,4 +480,14 @@ def update_tracks(
         n_alive, n_continued, n_new, scan_time,
     )
 
-    return new_tracks, next_id
+    diag: dict = {
+        "n_alive": n_alive,
+        "n_new": n_new,
+        "n_continued": n_continued,
+        "n_purged": n_purged,
+        "n_split": n_split,
+        "n_merge": n_merge,
+        "gate_rejects": gate_rejects,
+        "match_cost_mean": match_cost_mean,
+    }
+    return new_tracks, next_id, diag
