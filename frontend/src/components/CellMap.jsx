@@ -547,16 +547,16 @@ export default function CellMap({
         />
       ))}
 
-      {/* Detecciones crudas (pre-tracking) — polígonos tenues para debug */}
+      {/* Detecciones crudas (pre-tracking) — debug: contorno violeta discontinuo, relleno visible */}
       {showRawDetections && !compact && rawDetections.map((det, i) => (
         <Fragment key={`det-${i}`}>
           {det.ring.length >= 3 && (
             <Polygon
               positions={det.ring}
               pathOptions={{
-                color: "#94A3B8", weight: 1, opacity: 0.7,
-                fill: true, fillColor: "#94A3B8", fillOpacity: 0.05,
-                dashArray: "4 4",
+                color: "#7C3AED", weight: 2, opacity: 0.9,
+                fill: true, fillColor: "#7C3AED", fillOpacity: 0.25,
+                dashArray: "5 4",
               }}
             >
               <Tooltip>
@@ -582,11 +582,11 @@ export default function CellMap({
               positions={cell.ring}
               pathOptions={{
                 color:       ringColor,
-                weight:      2,
-                opacity:     0.9,
+                weight:      3,
+                opacity:     0.95,
                 fill:        true,
                 fillColor:   ringColor,
-                fillOpacity: 0.10,
+                fillOpacity: 0.35,
               }}
             />
 

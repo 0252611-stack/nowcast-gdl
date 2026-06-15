@@ -135,10 +135,14 @@ export default function FieldGridView() {
           <div style={st.toggleBar} role="group" aria-label="Capas del mapa">
             {[
               { key: "radar", label: "Radar", val: showRadar, set: setShowRadar },
-              { key: "cells", label: "Celdas", val: showCells, set: setShowCells, title: "Mostrar/ocultar las celdas de tormenta rastreadas (TITAN) — coloreadas por calidad" },
-              { key: "raw", label: "Debug celdas", val: showRawDetections, set: setShowRawDetections, title: "Mostrar/ocultar las detecciones crudas pre-tracking (para calibración)" },
+              { key: "cells", label: "Celdas", val: showCells, set: setShowCells,
+                badge: trackedCells.length || null,
+                title: "Mostrar/ocultar las celdas de tormenta rastreadas (TITAN) — coloreadas por calidad" },
+              { key: "raw", label: "Debug celdas", val: showRawDetections, set: setShowRawDetections,
+                badge: rawDetections.length || null,
+                title: "Mostrar/ocultar las detecciones crudas pre-tracking (para calibración)" },
               { key: "points", label: "Puntos", val: showPoints, set: setShowPoints },
-            ].map(({ key, label, val, set, title }) => (
+            ].map(({ key, label, val, set, title, badge }) => (
               <button
                 key={key}
                 style={val ? st.toggleOn : st.toggleOff}
@@ -147,9 +151,32 @@ export default function FieldGridView() {
                 title={title}
               >
                 {label}
+                {badge != null && (
+                  <span style={{
+                    marginLeft: "6px",
+                    background: val ? "rgba(255,255,255,0.25)" : "rgba(0,0,0,0.12)",
+                    borderRadius: "10px",
+                    padding: "1px 6px",
+                    fontSize: "11px",
+                    fontWeight: 700,
+                    lineHeight: 1.4,
+                  }}>{badge}</span>
+                )}
               </button>
             ))}
           </div>
+
+          {/* Aviso cuando la capa está activa pero sin datos (cielo despejado) */}
+          {showCells && trackedCells.length === 0 && (
+            <p style={{ fontSize: "12px", color: theme.textMuted, margin: "4px 0 0", paddingLeft: "2px" }}>
+              Sin celdas rastreadas — no hay tormentas activas en el área o el radar no ha actualizado aún.
+            </p>
+          )}
+          {showRawDetections && rawDetections.length === 0 && (
+            <p style={{ fontSize: "12px", color: theme.textMuted, margin: "4px 0 0", paddingLeft: "2px" }}>
+              Sin detecciones crudas — sin lluvia activa o sin frame de radar disponible.
+            </p>
+          )}
 
           {/* Mapa */}
           <div style={st.mapWrapper}>
