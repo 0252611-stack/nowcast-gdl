@@ -45,6 +45,12 @@ ALLOWED_ORIGINS: list[str] = os.getenv(
 # Sin token configurado, los endpoints de escritura devuelven 503 (fail-closed).
 ADMIN_TOKEN: str | None = os.getenv("ADMIN_TOKEN")
 
+# --- Tracking de celdas de eco ---
+CELL_MIN_PX: int = 30          # Área mínima (px) para considerar una celda rastreable
+CELL_MATCH_MAX_KM: float = 15.0  # Distancia máx de matching greedy entre ciclos
+CELL_MAX_MISSED: int = 1       # Ciclos sin match antes de purgar una celda
+CELL_HISTORY_LEN: int = 8      # Longitud del historial de centroides por celda
+
 # --- Zonas horarias ---
 TZ_LOCAL = ZoneInfo("America/Mexico_City")
 TZ_UTC = ZoneInfo("UTC")

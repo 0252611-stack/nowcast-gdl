@@ -164,6 +164,21 @@ const s = {
     fontWeight: 600,
     marginBottom: "8px",
   },
+  cellTrackBadge: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "4px",
+    padding: "2px 8px",
+    borderRadius: "6px",
+    background: "#EDE9FE",
+    border: "1px solid #C4B5FD",
+    color: "#5B21B6",
+    fontSize: "11px",
+    fontWeight: 600,
+    fontFamily: theme.fontMono,
+    fontVariantNumeric: "tabular-nums",
+    marginTop: "2px",
+  },
   confidenceBar: {
     display: "flex",
     alignItems: "center",
@@ -286,6 +301,15 @@ export default function PointCard({ point, forecast, radar, nowcast, rainviewerU
                   {nowcast.eta_minutes} min
                 </span>
               </span>
+              {nowcast.method === "cell_tracking" && nowcast.cell_id != null && (
+                <span
+                  style={s.cellTrackBadge}
+                  title={`Celda rastreada #${nowcast.cell_id} · edad ${nowcast.cell_age_minutes?.toFixed(1)} min · distancia al borde ${nowcast.leading_edge_distance_km?.toFixed(1)} km`}
+                >
+                  Celda #{nowcast.cell_id}
+                  {nowcast.cell_age_minutes != null && <> · {nowcast.cell_age_minutes.toFixed(1)} min</>}
+                </span>
+              )}
               <SourceTag source="nowcast" />
             </div>
           )}

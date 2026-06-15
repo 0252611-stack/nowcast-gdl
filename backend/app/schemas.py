@@ -171,11 +171,46 @@ class NowcastResult(BaseModel):
         None, ge=0,
         description="Multiplicador de tendencia de área del eco: >1 crece, <1 se disipa",
     )
+    # Campos de la Capa 2+3: identidad persistente + ETA leading-edge
+    cell_id: int | None = Field(
+        None, description="ID persistente de la celda causante (tracking de celdas)"
+    )
+    cell_age_minutes: float | None = Field(
+        None, ge=0, description="Madurez de la celda causante en minutos desde su detección"
+    )
+    leading_edge_distance_km: float | None = Field(
+        None, ge=0, description="Distancia al borde de ataque de la celda (menor que al centroide)"
+    )
     generated_at: datetime
     method: str = Field(
         "unknown",
         description=(
             "Método empleado: radar_unavailable | radar_current | insufficient_frames | "
-            "no_echo | no_motion | no_approaching_cell | advection"
+            "no_echo | no_motion | no_approaching_cell | cell_tracking | advection"
         ),
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Tracking de celdas (Capa 2): estado por celda para el mapa
+# --------------------------------------------------------------------------- #
+
+class TrackedCellSchema(BaseModel):
+    """Celda de eco rastreada con identidad persistente. Se devuelve desde /radar
+    como `tracked_cells` para que la UI dibuje polígonos con ID y trayectoria."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: int = Field(..., description="ID persistente de la celda")
+    lat: float = Field(..., ge=-90, le=90, description="Latitud del centroide actual")
+    lon: float = Field(..., ge=-180, le=180, description="Longitud del centroide actual")
+    mean_dbz: float = Field(..., description="Reflectividad media de la celda (dBZ)")
+    area_px: int = Field(..., ge=0, description="Área en píxeles del componente")
+    velocity_kmh: float = Field(..., ge=0, description="Velocidad de la celda (km/h)")
+    bearing_deg: float = Field(..., ge=0, le=360, description="Rumbo de la celda (0=N, 90=E)")
+    age_minutes: float = Field(..., ge=0, description="Tiempo desde primera detección (minutos)")
+    ring: list[list[float]] = Field(..., description="Contorno geográfico [[lat,lon],...]")
+    track: list[list[float]] = Field(
+        default_factory=list,
+        description="Historial de centroides [[lat,lon],...] para trazar la trayectoria"
     )

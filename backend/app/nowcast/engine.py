@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import logging
+import math
 from datetime import datetime, timedelta
 
 import numpy as np
@@ -14,6 +15,7 @@ from app.processing.motion import (
     compute_cell_motion,
     field_to_global_vector,
     find_upstream_echoes,
+    leading_edge_point,
     multi_frame_motion_field,
     project_cell,
     sample_field_at,
@@ -47,6 +49,7 @@ def estimate_arrival(
     motion_field: np.ndarray | None = None,
     ensemble_prob: float | None = None,
     prev_trend_ema: float | None = None,
+    tracked_cells: list | None = None,
 ) -> NowcastResult:
     """Estima si lloverá en el punto dentro de horizon_minutes.
 
@@ -62,7 +65,8 @@ def estimate_arrival(
       no_echo             — no hay eco en los frames (imagen transparente)
       no_motion           — hay eco pero no se detecta movimiento
       no_approaching_cell — no hay celda acercándose desde upstream
-      advection           — ETA calculada por optical flow + viento 700 hPa
+      cell_tracking       — ETA por borde de ataque de celda rastreada (Capa 2+3)
+      advection           — ETA por optical flow + viento 700 hPa (fallback)
     """
     generated_at = datetime.now(tz=config.TZ_LOCAL)
 
@@ -79,6 +83,9 @@ def estimate_arrival(
             method="unknown",
             intensity_trend=None,
             model_agreement=None,
+            cell_id=None,
+            cell_age_minutes=None,
+            leading_edge_distance_km=None,
         )
         defaults.update(kw)
         return NowcastResult(**defaults)
@@ -133,8 +140,135 @@ def estimate_arrival(
     trend = _clamp(trend, -1.0, 1.0)
     mult_trend = _clamp(1 + 0.5 * trend, 0.5, 1.2)
 
-    # 5. Buscar ecos corriente arriba (B1: búsqueda multicelular, cono ±120°).
-    #    Se evalúan hasta 5 candidatos con project_cell y se elige el de menor ETA.
+    # 5a. Ruta preferente: celdas rastreadas (Capa 2+3 — cell_tracking).
+    #     Si hay celdas con identidad persistente, usar borde de ataque + velocidad
+    #     por celda. Fallback al camino por píxeles si no hay celdas válidas.
+    if tracked_cells:
+        if forecast.hourly:
+            wind_speed_700_ct = forecast.hourly[0].wind_speed_700hPa_kmh
+            wind_dir_700_ct   = forecast.hourly[0].wind_direction_700hPa_deg
+        else:
+            wind_speed_700_ct, wind_dir_700_ct = 0.0, 0.0
+
+        best_ct_proj: dict | None = None
+        best_ct_cell = None
+        best_ct_edge_dist: float | None = None
+        best_ct_bearing_to_pt: float = 0.0
+
+        for cell in tracked_cells:
+            # Solo celdas que se mueven hacia el punto (cono ±120°)
+            if cell.velocity_kmh < 1.0:
+                continue
+            dlat_km = (forecast.lat - cell.lat) * 111.32
+            km_lon = 111.32 * math.cos(math.radians((bounds["north"] + bounds["south"]) / 2))
+            dlon_km = (forecast.lon - cell.lon) * km_lon
+            bearing_to_pt = math.degrees(math.atan2(dlon_km, dlat_km)) % 360
+            ang_diff = abs(((cell.bearing_deg - bearing_to_pt + 180) % 360) - 180)
+            if ang_diff > 120:
+                continue
+
+            # Borde de ataque (Capa 3)
+            if cell.ring and len(cell.ring) >= 2:
+                edge_lat, edge_lon, edge_dist_km = leading_edge_point(
+                    cell.ring, forecast.lat, forecast.lon, bounds
+                )
+            else:
+                dlat_km2 = (forecast.lat - cell.lat) * 111.32
+                dlon_km2 = (forecast.lon - cell.lon) * km_lon
+                edge_dist_km = math.sqrt(dlat_km2**2 + dlon_km2**2)
+                edge_lat, edge_lon = cell.lat, cell.lon
+
+            # Velocidad del campo local en el borde, o velocidad del track
+            cspeed = cell.velocity_kmh
+            cbearing = cell.bearing_deg
+            if motion_field is not None:
+                v_lat, v_lon = sample_field_at(
+                    motion_field, edge_lat, edge_lon, bounds
+                )
+                local_speed, local_bearing = vector_to_speed_bearing(v_lat, v_lon, bounds)
+                if local_speed >= 1.0:
+                    cspeed = local_speed
+                    cbearing = local_bearing
+
+            proj = project_cell(
+                forecast.lat, forecast.lon,
+                edge_dist_km,
+                cspeed,
+                cbearing,
+                bearing_to_pt,
+                wind_speed_700_ct,
+                wind_dir_700_ct,
+                horizon_minutes,
+            )
+            if proj["eta_minutes"] is None:
+                continue
+            if best_ct_proj is None or proj["eta_minutes"] < best_ct_proj["eta_minutes"]:
+                best_ct_proj = proj
+                best_ct_cell = cell
+                best_ct_edge_dist = edge_dist_km
+                best_ct_bearing_to_pt = bearing_to_pt
+
+        if best_ct_proj is not None and best_ct_cell is not None:
+            cell = best_ct_cell
+            eta_min = best_ct_proj["eta_minutes"]
+            conf_radar = best_ct_proj["confidence"]
+
+            # Tendencia por celda (area_history de esa celda — no global)
+            if len(cell.area_history) >= 2:
+                a_new = cell.area_history[-1]
+                a_old = cell.area_history[-2]
+                raw_trend_ct = _clamp((a_new - a_old) / max(1, a_old), -1.0, 1.0)
+                trend = (0.5 * raw_trend_ct + 0.5 * prev_trend_ema
+                         if prev_trend_ema is not None else raw_trend_ct)
+                trend = _clamp(trend, -1.0, 1.0)
+            else:
+                trend = _clamp(
+                    0.5 * _clamp((n_echo_newer - n_echo_older) / max(1, n_echo_older), -1.0, 1.0)
+                    + (0.5 * prev_trend_ema if prev_trend_ema is not None else 0.0),
+                    -1.0, 1.0,
+                )
+            mult_trend = _clamp(1 + 0.5 * trend, 0.5, 1.2)
+
+            arrival_time = generated_at + timedelta(minutes=eta_min)
+            if ensemble_prob is not None:
+                model_prob = float(ensemble_prob)
+            else:
+                model_prob = _model_prob_at(forecast, arrival_time)
+            w = _clamp(1 - eta_min / 120, 0.3, 1.0)
+            if not 0.0 <= conf_radar <= 1.0:
+                log.warning(
+                    "conf_radar fuera de rango (cell_tracking) para %s: %.3f", point_id, conf_radar
+                )
+            confidence = _clamp(w * conf_radar * mult_trend + (1 - w) * model_prob, 0.0, 1.0)
+
+            # age_minutes: intervalo de escaneo × ciclos de vida
+            interval_s = max(
+                1.0, (frames[0][1] - frames[1][1]).total_seconds() if len(frames) >= 2 else 90.0
+            )
+            age_minutes = round((cell.age_frames - 1) * interval_s / 60.0, 1)
+
+            return _result(
+                eta_minutes=eta_min,
+                confidence=round(confidence, 3),
+                cell_speed_kmh=round(cell.velocity_kmh, 1),
+                cell_bearing_deg=round(cell.bearing_deg, 1),
+                cell_lat=round(cell.lat, 6),
+                cell_lon=round(cell.lon, 6),
+                bearing_cell_to_point_deg=round(best_ct_bearing_to_pt, 1),
+                intensity_trend=round(trend, 3),
+                model_agreement=round(model_prob, 3),
+                conf_radar=round(conf_radar, 3),
+                weight_radar=round(w, 3),
+                mult_trend=round(mult_trend, 3),
+                cell_id=cell.id,
+                cell_age_minutes=age_minutes,
+                leading_edge_distance_km=round(best_ct_edge_dist, 2) if best_ct_edge_dist is not None else None,
+                method="cell_tracking",
+            )
+        # Sin celda válida → fallback al camino por píxeles (advection)
+
+    # 5b. Fallback: buscar ecos corriente arriba por píxeles (B1: multicelular, cono ±120°).
+    #     Se evalúan hasta 5 candidatos con project_cell y se elige el de menor ETA.
     newer_image = Image.open(io.BytesIO(newer_bytes))
     candidates = find_upstream_echoes(
         newer_image, bounds,

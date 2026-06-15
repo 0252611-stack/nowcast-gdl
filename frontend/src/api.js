@@ -45,7 +45,13 @@ export async function getForecast(pointId) {
  *   trajectory_wind: Array<{lat: number, lon: number, toward_deg: number, speed_kmh: number}>|null,
  *   intensity_trend: number|null, model_agreement: number|null,
  *   conf_radar: number|null, weight_radar: number|null, mult_trend: number|null,
+ *   cell_id: number|null, cell_age_minutes: number|null,
+ *   leading_edge_distance_km: number|null,
  *   generated_at: string, method: string }} NowcastResult
+ *
+ * @typedef {{ id: number, lat: number, lon: number, mean_dbz: number, area_px: number,
+ *   velocity_kmh: number, bearing_deg: number, age_minutes: number,
+ *   ring: number[][], track: number[][] }} TrackedCell
  *
  * @typedef {{ lat: number, lon: number, dbz: number, bearing_deg: number, speed_kmh: number }} ContextEcho
  *
@@ -55,7 +61,7 @@ export async function getForecast(pointId) {
  *
  * @returns {Promise<{radar: object|null, radar_available: boolean, nowcast: NowcastResult|null,
  *   rainviewer_url: string|null, context_echoes: ContextEcho[],
- *   echo_contours: EnrichedContour[],
+ *   echo_contours: EnrichedContour[], tracked_cells: TrackedCell[],
  *   radar_bounds: {north: number, south: number, east: number, west: number}|null}>}
  */
 export async function getRadar(pointId) {

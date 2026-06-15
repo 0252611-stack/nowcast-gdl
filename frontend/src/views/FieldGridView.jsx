@@ -22,12 +22,14 @@ export default function FieldGridView() {
   const [nowcasts, setNowcasts] = useState({})
   const [echoContours, setEchoContours] = useState([])
   const [contextEchoes, setContextEchoes] = useState([])
+  const [trackedCells, setTrackedCells] = useState([])
   const [radarBounds, setRadarBounds] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
 
   const [showRadar, setShowRadar] = useState(true)
   const [showPoints, setShowPoints] = useState(true)
+  const [showCells, setShowCells] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -58,6 +60,7 @@ export default function FieldGridView() {
         }))
 
         setEchoContours(results.find(r => r.echo_contours?.length)?.echo_contours ?? [])
+        setTrackedCells(results.find(r => r.tracked_cells?.length)?.tracked_cells ?? [])
       } catch (e) {
         if (!cancelled) setError(e.message)
       } finally {
@@ -110,13 +113,15 @@ export default function FieldGridView() {
           <div style={st.toggleBar} role="group" aria-label="Capas del mapa">
             {[
               { key: "radar", label: "Radar", val: showRadar, set: setShowRadar },
+              { key: "cells", label: "Celdas", val: showCells, set: setShowCells, title: "Mostrar/ocultar las celdas de tormenta rastreadas (TITAN)" },
               { key: "points", label: "Puntos", val: showPoints, set: setShowPoints },
-            ].map(({ key, label, val, set }) => (
+            ].map(({ key, label, val, set, title }) => (
               <button
                 key={key}
                 style={val ? st.toggleOn : st.toggleOff}
                 onClick={() => set(v => !v)}
                 aria-pressed={val}
+                title={title}
               >
                 {label}
               </button>
@@ -138,6 +143,8 @@ export default function FieldGridView() {
               showArrows={false}
               showPoints={showPoints}
               showMesh
+              showCells={showCells}
+              trackedCells={trackedCells}
             />
           </div>
 

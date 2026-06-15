@@ -818,3 +818,82 @@ para referencia futura.
 
 **Fase 3: CANCELADA / pendiente** — no procede sin feed VR en tiempo real.
 Reactivar solo si el IAM proporciona acceso directo: (33) 36 16 49 37.
+
+---
+
+## Sesión 6 — 14 jun 2026 — Esquema híbrido 3 capas (TITAN + leading-edge)
+
+### Etapa 1 — Capa 2 backend: tracking de celdas ✅ (Compuerta 1)
+
+Constantes nuevas en `config.py`: `CELL_MIN_PX=30`, `CELL_MATCH_MAX_KM=15.0`,
+`CELL_MAX_MISSED=1`, `CELL_HISTORY_LEN=8`.
+
+**`backend/app/processing/tracking.py`** (nuevo):
+- `TrackedCell` — dataclass con id persistente, historial de centroides/área, EMA de velocidad
+- `detect_cells(image, bounds)` — colormap LUT → máscara → connectedComponents → contornos
+- `update_tracks(prev, dets, scan_time, bounds, interval_s, next_id)` — greedy con gating,
+  determinista, EMA α=0.5 en bearing/speed, split/merge ligero
+
+`RadarState` + `run_radar_loop` en `scheduler.py` actualizados para mantener y actualizar
+el estado de celdas por ciclo. **Tests: 20 nuevos en `test_tracking.py` — 138/138 ✅**
+
+---
+
+### Etapa 2 — Capa 3 motor: ETA leading-edge ✅ (Compuerta 2)
+
+**`motion.py`** — `leading_edge_point(ring, lat, lon, bounds)`: vértice del ring más cercano
+al punto monitoreado + distancia en km.
+
+**`engine.py`** — nueva ruta `cell_tracking` en `estimate_arrival`:
+- Filtra celdas upstream (cono ±120°), usa distancia al borde (no al centroide)
+- `mult_trend` de `cell.area_history`; expone `cell_id`, `cell_age_minutes`,
+  `leading_edge_distance_km`, `method="cell_tracking"`
+- Sin celda válida → fallback a `advection` sin regresión
+
+**Tests: 7 nuevos en `test_nowcast.py` — 148/148 ✅**
+
+---
+
+### Etapa 3 — Contrato + endpoint ✅ (Compuerta 3)
+
+**`schemas.py`** — `NowcastResult` + `cell_id`, `cell_age_minutes`, `leading_edge_distance_km`
+(nullable). Nuevo modelo `TrackedCellSchema` con `id, lat, lon, mean_dbz, area_px, velocity_kmh,
+bearing_deg, age_minutes, ring, track`.
+
+**`api.js`** — typedefs actualizados en mismo commit (`NowcastResult` + `TrackedCell` +
+`tracked_cells: TrackedCell[]` en `getRadar`).
+
+**`main.py`** — `_serialize_tracked_cells` helper; `tracked_cells` en `/radar` SIEMPRE
+serializado (fuera del bloque de frames, warmup funciona). **Tests: 10 nuevos — 158/158 ✅**
+
+---
+
+### Etapa 4 — UI completa ✅ (Compuerta 4)
+
+**`CellMap.jsx`** — `trackedCellColor(dbz)` (paleta violeta), `trackedCellArrowIcon(bearing,dbz)`,
+props `trackedCells=[]`/`showCells=false`, bloque de render Fragment:
+Polygon ring + Polyline track + Marker tooltip (Celda #id, dBZ, vel, edad, área).
+
+**`MapView.jsx`** — toggle "Celdas" en `LAYERS`, estado `trackedCells`, leyenda violeta,
+pasa `showCells`/`trackedCells` a CellMap.
+
+**`FieldGridView.jsx`** — toggle "Celdas" + `trackedCells` state.
+
+**`PointCard.jsx`** — badge violeta `Celda #id · X.X min` cuando `method === "cell_tracking"`.
+
+**Verificación Compuerta 4:**
+- `npm run lint` 0 warnings ✅ | `npm run build` ✅ | `pytest` 158/158 ✅
+- Browser (fetch mock): toggle "Celdas" ON → polígono violeta + flecha + trayectoria visibles ✅
+
+---
+
+### Estado actual
+
+**Tests:** 158/158 ✅ | **Lint:** 0 warnings ✅ | **Build:** ✅
+
+**Push pendiente** — con consentimiento explícito del usuario.
+
+**Pendiente:**
+- Push a Railway/Vercel
+- Observar logs del tracker en producción (nº celdas, split/merge)
+- Calibración de `CELL_MIN_PX`/`CELL_MATCH_MAX_KM` con tráfico real de temporada

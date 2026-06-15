@@ -13,6 +13,7 @@ const LAYERS = [
   { key: "showContours",     label: "Contornos", title: "Mostrar/ocultar los contornos de los ecos de lluvia" },
   { key: "showArrows",       label: "Flechas",   title: "Mostrar/ocultar las flechas de dirección del campo óptico" },
   { key: "showFieldVectors", label: "Vectores",  title: "Mostrar/ocultar las flechas del campo de movimiento interior de cada eco" },
+  { key: "showCells",        label: "Celdas",    title: "Mostrar/ocultar las celdas de tormenta rastreadas (Capa 2 — TITAN)" },
   { key: "showPoints",       label: "Puntos",    title: "Mostrar/ocultar los puntos monitoreados y sus ecos causantes" },
 ]
 
@@ -22,10 +23,11 @@ export default function MapView() {
   const [rainviewerUrl, setRainviewerUrl] = useState(null)
   const [contextEchoes, setContextEchoes] = useState([])
   const [echoContours, setEchoContours] = useState([])
+  const [trackedCells, setTrackedCells] = useState([])
   const [radarBounds, setRadarBounds] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
-  const [layers, setLayers] = useState({ showRadar: true, showContours: true, showArrows: true, showFieldVectors: false, showPoints: true })
+  const [layers, setLayers] = useState({ showRadar: true, showContours: true, showArrows: true, showFieldVectors: false, showCells: false, showPoints: true })
 
   function toggleLayer(key) {
     setLayers(prev => ({ ...prev, [key]: !prev[key] }))
@@ -66,6 +68,9 @@ export default function MapView() {
 
         // Contornos — son globales (misma imagen), tomar el primer resultado no vacío
         setEchoContours(results.find(r => r.echo_contours?.length)?.echo_contours ?? [])
+
+        // Celdas rastreadas — globales por imagen, tomar el primer resultado no vacío
+        setTrackedCells(results.find(r => r.tracked_cells?.length)?.tracked_cells ?? [])
       } catch (e) {
         if (!cancelled) setError(e.message)
       } finally {
@@ -123,7 +128,9 @@ export default function MapView() {
               showContours={layers.showContours}
               showArrows={layers.showArrows}
               showFieldVectors={layers.showFieldVectors}
+              showCells={layers.showCells}
               showPoints={layers.showPoints}
+              trackedCells={trackedCells}
             />
           </div>
 
@@ -138,6 +145,12 @@ export default function MapView() {
             <span style={st.legendItem}>
               <span style={{ display: "inline-block", width: "20px", height: "3px", background: theme.orange, verticalAlign: "middle", marginRight: "2px" }} />
               Contorno del eco causante
+            </span>
+            <span style={st.legendItem}>
+              <svg width="14" height="14" viewBox="0 0 14 14" style={{ flexShrink: 0 }}>
+                <polygon points="7,1 11,12 7,9 3,12" fill="#8B5CF6" stroke="#fff" strokeWidth="0.8"/>
+              </svg>
+              Celda rastreada (TITAN)
             </span>
             <span style={st.legendItem}>
               <svg width="14" height="14" viewBox="0 0 14 14" style={{ flexShrink: 0 }}>

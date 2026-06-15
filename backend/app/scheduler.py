@@ -18,6 +18,7 @@ import numpy as np
 
 from app.nowcast.engine import estimate_arrival
 from app.processing.motion import multi_frame_motion_field
+from app.processing.tracking import TrackedCell, detect_cells, update_tracks
 from app.processing.pixel_extract import reading_for_point
 from app.schemas import WindSample
 from app.sources.openmeteo import (
@@ -53,6 +54,11 @@ class RadarState:
     last_eta: dict = field(default_factory=dict)  # point_id → (eta_min|None, method)
     # EMA de la tendencia de área del eco por punto (suaviza ruido de fotograma a fotograma)
     trend_ema: dict = field(default_factory=dict)  # point_id → float
+    # Capa 2: celdas rastreadas con identidad persistente
+    tracked_cells: list = field(default_factory=list)   # list[TrackedCell]
+    next_cell_id: int = 1
+    # Intervalo del último ciclo de radar (para calcular age_minutes en el endpoint)
+    _cell_interval_s: float = 90.0
 
 
 def _scan_time_from_kmz_url(kmz_url: str) -> datetime:
@@ -126,6 +132,32 @@ async def run_radar_loop(conn: sqlite3.Connection, state: RadarState) -> None:
                     else:
                         state.motion_field_ema = new_field
 
+            # Capa 2: seguimiento de celdas UNA VEZ por ciclo, usando el frame más nuevo.
+            if state.last_bounds and len(frames_for_motion) >= 1:
+                try:
+                    import io as _io
+                    from PIL import Image as _Image
+                    newer_bytes_track, newer_time_track = frames_for_motion[0]
+                    img_track = _Image.open(_io.BytesIO(newer_bytes_track))
+                    dets = detect_cells(img_track, state.last_bounds)
+                    interval_track = 90.0
+                    if len(frames_for_motion) >= 2:
+                        _, older_time_track = frames_for_motion[1]
+                        interval_track = max(
+                            1.0, (newer_time_track - older_time_track).total_seconds()
+                        )
+                    state._cell_interval_s = interval_track
+                    state.tracked_cells, state.next_cell_id = update_tracks(
+                        state.tracked_cells, dets, newer_time_track,
+                        state.last_bounds, interval_track, state.next_cell_id,
+                    )
+                    log.debug(
+                        "Tracking: %d celdas rastreadas (next_id=%d)",
+                        len(state.tracked_cells), state.next_cell_id,
+                    )
+                except Exception as exc_tr:
+                    log.warning("Error en tracking de celdas: %s", exc_tr)
+
             # Emitir una predicción por punto y registrarla para verificación posterior
             frames = get_recent_frames(conn, 2)
             async with httpx.AsyncClient(
@@ -150,6 +182,7 @@ async def run_radar_loop(conn: sqlite3.Connection, state: RadarState) -> None:
                             motion_field=state.motion_field_ema,
                             ensemble_prob=ens_prob,
                             prev_trend_ema=state.trend_ema.get(pt["id"]),
+                            tracked_cells=state.tracked_cells if state.tracked_cells else None,
                         )
                         if result.intensity_trend is not None:
                             state.trend_ema[pt["id"]] = result.intensity_trend

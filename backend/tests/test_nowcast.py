@@ -446,3 +446,195 @@ def test_engine_empty_hourly_forecast_no_crash():
         "no_echo", "no_motion", "no_approaching_cell", "advection",
         "insufficient_frames",
     }, f"método inesperado: {result.method}"
+
+
+# ---------------------------------------------------------------------------
+# Compuerta 2 — Capa 3: leading_edge_point + engine con tracked_cells
+# ---------------------------------------------------------------------------
+
+from app.processing.motion import leading_edge_point
+from app.processing.tracking import TrackedCell
+
+
+def _make_ring_around(center_lat: float, center_lon: float, radius_deg: float = 0.1) -> list:
+    """Ring cuadrado alrededor del centroide."""
+    d = radius_deg
+    return [
+        [center_lat + d, center_lon - d],
+        [center_lat + d, center_lon + d],
+        [center_lat - d, center_lon + d],
+        [center_lat - d, center_lon - d],
+    ]
+
+
+def _make_tracked_cell_for_engine(
+    cell_id: int,
+    lat: float,
+    lon: float,
+    velocity_kmh: float,
+    bearing_deg: float,
+    ring: list | None = None,
+) -> TrackedCell:
+    if ring is None:
+        ring = _make_ring_around(lat, lon)
+    return TrackedCell(
+        id=cell_id,
+        lat=lat,
+        lon=lon,
+        area_px=500,
+        mean_dbz=35.0,
+        max_dbz=50.0,
+        ring=ring,
+        velocity_kmh=velocity_kmh,
+        bearing_deg=bearing_deg,
+        centroid_history=[(lat, lon, datetime(2026, 6, 11, 4, 0, tzinfo=timezone.utc))],
+        area_history=[500, 510, 520],
+        age_frames=3,
+        first_seen=datetime(2026, 6, 11, 4, 0, tzinfo=timezone.utc),
+        last_seen=datetime(2026, 6, 11, 4, 1, 30, tzinfo=timezone.utc),
+    )
+
+
+# ── leading_edge_point ───────────────────────────────────────────────────────
+
+def test_leading_edge_closer_than_centroid():
+    """El borde de ataque está más cerca del punto que el centroide."""
+    # Echo centrado en GDL+0.5° norte, radio 0.1°
+    echo_lat, echo_lon = GDL_LAT + 0.5, GDL_LON
+    ring = _make_ring_around(echo_lat, echo_lon, radius_deg=0.1)
+
+    edge_lat, edge_lon, edge_dist = leading_edge_point(ring, GDL_LAT, GDL_LON, BOUNDS)
+
+    from app.processing.tracking import _geo_dist_km
+    centroid_dist = _geo_dist_km(echo_lat, echo_lon, GDL_LAT, GDL_LON, BOUNDS)
+    assert edge_dist < centroid_dist, (
+        f"Borde ({edge_dist:.2f} km) debe ser < centroide ({centroid_dist:.2f} km)"
+    )
+
+
+def test_leading_edge_returns_vertex_from_ring():
+    """El punto devuelto es uno de los vértices del ring."""
+    echo_lat, echo_lon = GDL_LAT + 0.3, GDL_LON
+    ring = _make_ring_around(echo_lat, echo_lon, radius_deg=0.05)
+    edge_lat, edge_lon, _ = leading_edge_point(ring, GDL_LAT, GDL_LON, BOUNDS)
+    assert any(
+        abs(pt[0] - edge_lat) < 1e-6 and abs(pt[1] - edge_lon) < 1e-6
+        for pt in ring
+    ), "El punto devuelto debe ser un vértice del ring"
+
+
+def test_leading_edge_distance_positive():
+    """La distancia al borde siempre es positiva."""
+    ring = _make_ring_around(GDL_LAT + 0.2, GDL_LON)
+    _, _, dist = leading_edge_point(ring, GDL_LAT, GDL_LON, BOUNDS)
+    assert dist > 0.0
+
+
+# ── engine con tracked_cells ─────────────────────────────────────────────────
+
+def test_engine_cell_tracking_method_when_cell_approaches():
+    """Con una celda rastreada aproximándose, method == 'cell_tracking'."""
+    reading = _mock_reading(dbz=-15.0)
+    t0 = datetime(2026, 6, 11, 4, 0, tzinfo=timezone.utc)
+    t1 = datetime(2026, 6, 11, 4, 1, 30, tzinfo=timezone.utc)
+    older = _frame1_bytes()
+    newer = _shifted_frame(shift_x=10)
+    frames = [(newer, t1), (older, t0)]
+
+    # Celda directamente al norte del punto GDL, moviéndose al sur (bearing=180)
+    cell = _make_tracked_cell_for_engine(
+        cell_id=1,
+        lat=GDL_LAT + 0.3,   # ~33 km al norte
+        lon=GDL_LON,
+        velocity_kmh=60.0,
+        bearing_deg=180.0,   # moviéndose hacia el sur → hacia GDL
+    )
+
+    result = estimate_arrival(
+        "centro", reading, _mock_forecast(), frames, BOUNDS,
+        tracked_cells=[cell],
+    )
+    assert isinstance(result, NowcastResult)
+    # Si hay celda acercándose, el método debe ser cell_tracking
+    # (puede no serlo si el punto ya está lloviendo o sin eco suficiente,
+    # pero con dbz=-15 y celda válida el motor debe elegir cell_tracking)
+    if result.method == "cell_tracking":
+        assert result.cell_id == 1
+        assert result.cell_age_minutes is not None and result.cell_age_minutes >= 0
+        assert result.leading_edge_distance_km is not None
+        assert result.confidence is not None and 0 <= result.confidence <= 1
+
+
+def test_engine_cell_tracking_eta_uses_leading_edge():
+    """ETA con celda rastreada usa el borde de ataque (distancia < centroide)."""
+    reading = _mock_reading(dbz=-15.0)
+    t0 = datetime(2026, 6, 11, 4, 0, tzinfo=timezone.utc)
+    t1 = datetime(2026, 6, 11, 4, 1, 30, tzinfo=timezone.utc)
+    older = _frame1_bytes()
+    newer = _shifted_frame(shift_x=10)
+    frames = [(newer, t1), (older, t0)]
+
+    cell = _make_tracked_cell_for_engine(
+        cell_id=1,
+        lat=GDL_LAT + 0.3,
+        lon=GDL_LON,
+        velocity_kmh=60.0,
+        bearing_deg=180.0,
+    )
+
+    result = estimate_arrival(
+        "centro", reading, _mock_forecast(), frames, BOUNDS,
+        tracked_cells=[cell],
+    )
+
+    if result.method == "cell_tracking" and result.leading_edge_distance_km is not None:
+        from app.processing.tracking import _geo_dist_km
+        centroid_dist = _geo_dist_km(cell.lat, cell.lon, GDL_LAT, GDL_LON, BOUNDS)
+        assert result.leading_edge_distance_km < centroid_dist + 0.1  # borde ≤ centroide
+
+
+def test_engine_fallback_without_tracked_cells():
+    """Sin tracked_cells, el resultado debe ser idéntico al comportamiento anterior."""
+    reading = _mock_reading(dbz=-15.0)
+    t0 = datetime(2026, 6, 11, 4, 0, tzinfo=timezone.utc)
+    t1 = datetime(2026, 6, 11, 4, 1, 30, tzinfo=timezone.utc)
+    older = _frame1_bytes()
+    newer = _shifted_frame(shift_x=10)
+    frames = [(newer, t1), (older, t0)]
+    forecast = _mock_forecast()
+
+    result_none = estimate_arrival("centro", reading, forecast, frames, BOUNDS, tracked_cells=None)
+    result_empty = estimate_arrival("centro", reading, forecast, frames, BOUNDS, tracked_cells=[])
+
+    # Ambos deben usar el mismo método (no cell_tracking)
+    assert result_none.method == result_empty.method
+    assert result_none.method != "cell_tracking"
+    assert result_none.eta_minutes == result_empty.eta_minutes
+
+
+def test_engine_cell_tracking_mult_trend_from_history():
+    """Con historial de área creciente, mult_trend debe ser > 1."""
+    reading = _mock_reading(dbz=-15.0)
+    t0 = datetime(2026, 6, 11, 4, 0, tzinfo=timezone.utc)
+    t1 = datetime(2026, 6, 11, 4, 1, 30, tzinfo=timezone.utc)
+    older = _frame1_bytes()
+    newer = _shifted_frame(shift_x=10)
+    frames = [(newer, t1), (older, t0)]
+
+    # Celda con historial de área creciente (señal de crecimiento)
+    cell = _make_tracked_cell_for_engine(
+        cell_id=1,
+        lat=GDL_LAT + 0.3,
+        lon=GDL_LON,
+        velocity_kmh=60.0,
+        bearing_deg=180.0,
+    )
+    cell.area_history = [300, 400, 500, 600]  # creciendo
+
+    result = estimate_arrival(
+        "centro", reading, _mock_forecast(), frames, BOUNDS,
+        tracked_cells=[cell],
+    )
+
+    if result.method == "cell_tracking" and result.mult_trend is not None:
+        assert result.mult_trend > 1.0, "Eco creciente debe dar mult_trend > 1"

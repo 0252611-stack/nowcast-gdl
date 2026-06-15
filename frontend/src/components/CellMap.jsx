@@ -255,6 +255,24 @@ function computeMeshCells(ring, vectors) {
   return cells
 }
 
+/** Color del anillo/trayectoria de una celda rastreada según reflectividad media */
+function trackedCellColor(mean_dbz) {
+  if (mean_dbz >= 45) return "#7C3AED"  // violeta intenso — eco fuerte
+  if (mean_dbz >= 30) return "#8B5CF6"  // violeta medio — moderado
+  return "#A78BFA"                       // lavanda — ligero
+}
+
+/** Flecha violeta para indicar la dirección de movimiento de una celda rastreada */
+function trackedCellArrowIcon(bearing, mean_dbz) {
+  const color = trackedCellColor(mean_dbz)
+  const svg = `<svg width="20" height="20" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Dirección celda">
+    <g transform="rotate(${bearing},10,10)">
+      <polygon points="10,2 17,17 10,13 3,17" fill="${color}" stroke="#FFFFFF" stroke-width="1.5" stroke-linejoin="round"/>
+    </g>
+  </svg>`
+  return L.divIcon({ className: "", html: svg, iconSize: [20, 20], iconAnchor: [10, 10] })
+}
+
 /** Flecha pequeña naranja — dirección de movimiento dentro del perímetro de un eco */
 function echoMotionArrowIcon(bearing) {
   const svg = `<svg width="14" height="14" viewBox="0 0 14 14" xmlns="http://www.w3.org/2000/svg">
@@ -337,6 +355,8 @@ export default function CellMap({
   showPoints       = true,
   showMesh         = false,  // cuadrantes CAD + flechas (modo diagnóstico /malla)
   showFieldVectors = false,  // solo flechas del campo interior, sin rectángulos (toggle en /mapa)
+  trackedCells     = [],     // list[TrackedCellSchema] — celdas rastreadas con identidad
+  showCells        = false,  // toggle de la capa de celdas rastreadas
 }) {
   const center = focusPoint
     ? [focusPoint.lat, focusPoint.lon]
@@ -521,6 +541,49 @@ export default function CellMap({
           pathOptions={{ color: theme.primary, weight: 1.5, dashArray: "4 6", opacity: 0.6 }}
         />
       ))}
+
+      {/* Celdas rastreadas (Capa 2) — anillo, trayectoria histórica y etiqueta de identidad */}
+      {showCells && !compact && trackedCells.map(cell => {
+        const ringColor = trackedCellColor(cell.mean_dbz)
+        return (
+          <Fragment key={`tc-${cell.id}`}>
+            {/* Polígono del anillo de la celda */}
+            <Polygon
+              positions={cell.ring}
+              pathOptions={{
+                color:       ringColor,
+                weight:      2,
+                opacity:     0.9,
+                fill:        true,
+                fillColor:   ringColor,
+                fillOpacity: 0.08,
+              }}
+            />
+
+            {/* Trayectoria histórica de centroides */}
+            {cell.track.length >= 2 && (
+              <Polyline
+                positions={cell.track}
+                pathOptions={{ color: ringColor, weight: 2, dashArray: "3 5", opacity: 0.65 }}
+              />
+            )}
+
+            {/* Flecha de velocidad + tooltip de diagnóstico */}
+            <Marker
+              position={[cell.lat, cell.lon]}
+              icon={trackedCellArrowIcon(cell.bearing_deg, cell.mean_dbz)}
+            >
+              <Tooltip>
+                <div style={{ fontSize: "12px", lineHeight: 1.6 }}>
+                  <strong>Celda #{cell.id}</strong><br />
+                  {cell.mean_dbz.toFixed(0)} dBZ · {cell.velocity_kmh.toFixed(0)} km/h · {Math.round(cell.bearing_deg)}°<br />
+                  Edad: {cell.age_minutes} min · {cell.area_px} px
+                </div>
+              </Tooltip>
+            </Marker>
+          </Fragment>
+        )
+      })}
 
       {/* Flechas de dirección del campo — posicionadas sobre los ecos más fuertes */}
       {showArrows && arrowPositions.map((ce, i) => (

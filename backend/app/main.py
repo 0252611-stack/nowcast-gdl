@@ -19,8 +19,9 @@ from pydantic import BaseModel, Field
 from app import config
 from app.nowcast.engine import estimate_arrival
 from app.processing.motion import compute_cell_motion, find_context_echoes, find_echo_contours, sample_ring_vectors
+from app.processing.tracking import TrackedCell, detect_cells, update_tracks
 from app.scheduler import RadarState, run_forecast_loop, run_radar_loop
-from app.schemas import ContextEcho, WindSample
+from app.schemas import ContextEcho, TrackedCellSchema, WindSample
 from app.sources.openmeteo import (
     fetch_ensemble,
     fetch_forecast,
@@ -47,6 +48,30 @@ from app.storage import (
 _RAINVIEWER_TTL = 300.0  # segundos entre llamadas a RainViewer
 
 log = logging.getLogger(__name__)
+
+
+def _serialize_tracked_cells(
+    cells: list,
+    interval_seconds: float = 90.0,
+) -> list[dict]:
+    """Convierte list[TrackedCell] al shape de TrackedCellSchema para el endpoint."""
+    out = []
+    for c in cells:
+        age_min = round((c.age_frames - 1) * interval_seconds / 60.0, 1)
+        track = [[pt[0], pt[1]] for pt in c.centroid_history]
+        out.append({
+            "id": c.id,
+            "lat": c.lat,
+            "lon": c.lon,
+            "mean_dbz": c.mean_dbz,
+            "area_px": c.area_px,
+            "velocity_kmh": c.velocity_kmh,
+            "bearing_deg": c.bearing_deg,
+            "age_minutes": age_min,
+            "ring": c.ring,
+            "track": track,
+        })
+    return out
 
 
 @asynccontextmanager
@@ -195,6 +220,7 @@ async def get_radar(point_id: str):
     rainviewer_url = None
     context_echoes: list[ContextEcho] = []
     echo_contours: list[dict] = []
+    tracked_cells_out: list[dict] = []
 
     async with httpx.AsyncClient(
         headers={"User-Agent": config.USER_AGENT}, timeout=10
@@ -212,6 +238,7 @@ async def get_radar(point_id: str):
                 point_id, reading, forecast, frames, state.last_bounds,
                 motion_field=state.motion_field_ema,
                 ensemble_prob=ensemble_prob,
+                tracked_cells=state.tracked_cells if hasattr(state, "tracked_cells") else None,
             )
 
             if nowcast is not None and nowcast.cell_lat is not None:
@@ -268,11 +295,19 @@ async def get_radar(point_id: str):
                             for ring in plain_rings
                         ]
                         app.state.echo_contours_cache = (newer_time, echo_contours)
+
             except Exception as exc_ce:
                 log.debug("Context echoes no disponibles: %s", exc_ce)
 
         except Exception as exc:
             log.warning("Nowcast engine falló para %s: %s", point_id, exc)
+
+        # Celdas rastreadas — siempre disponibles desde el estado del scheduler,
+        # independientemente de si hay frames nuevos (warmup = lista vacía).
+        tracked_cells_out = _serialize_tracked_cells(
+            getattr(state, "tracked_cells", []),
+            getattr(state, "_cell_interval_s", 90.0),
+        )
 
         if not state.available:
             now = time.monotonic()
@@ -288,6 +323,7 @@ async def get_radar(point_id: str):
         "rainviewer_url": rainviewer_url,
         "context_echoes": context_echoes,
         "echo_contours": echo_contours,
+        "tracked_cells": tracked_cells_out,
         "radar_bounds": state.last_bounds,
     }
 
