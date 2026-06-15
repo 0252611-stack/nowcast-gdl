@@ -8,6 +8,7 @@ import logging
 import sqlite3
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException
@@ -90,6 +91,7 @@ async def lifespan(app: FastAPI):
     # sin este ajuste el root queda en WARNING y los INFO/DEBUG de tracking no aparecen.
     logging.root.setLevel(getattr(logging, config.LOG_LEVEL.upper(), logging.INFO))
 
+    Path(config.DB_PATH).parent.mkdir(parents=True, exist_ok=True)
     conn = init_db(config.DB_PATH)
     seed_points(conn, config.POINTS)
     state = RadarState()
