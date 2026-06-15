@@ -202,6 +202,91 @@ const s = {
   }),
 }
 
+/** Paleta de colores por categoría de eco (consistente con la leyenda del radar IAM) */
+const CATEGORY_STYLE = {
+  "Ruido":            { bg: theme.surfaceMuted,  border: theme.borderMid, color: theme.textFaint },
+  "Débil":            { bg: "#DBEAFE",           border: "#93C5FD",       color: "#1E40AF" },
+  "Ligera":           { bg: theme.greenLight,    border: theme.green + "88", color: "#166534" },
+  "Moderada a fuerte":{ bg: theme.orangeLight,   border: theme.orange + "88", color: "#9A3412" },
+  "Granizo":          { bg: theme.redLight,      border: theme.red + "88",   color: "#991B1B" },
+}
+
+const VERDICT_STYLE = {
+  empeora:   { bg: theme.redLight,    border: theme.red + "55",    color: "#991B1B", icon: "↑" },
+  mejora:    { bg: theme.greenLight,  border: theme.green + "55",  color: "#166534", icon: "↓" },
+  estable:   { bg: theme.surfaceMuted,border: theme.borderMid,     color: theme.textMuted, icon: "→" },
+  sin_lluvia:{ bg: theme.surfaceMuted,border: theme.borderMid,     color: theme.textFaint, icon: "—" },
+}
+
+/**
+ * Muestra 4 chips de intensidad (0/15/30/45 min) + badge de veredicto.
+ * Props: { steps: IntensityStep[], verdict: string|null }
+ */
+function IntensityTimeline({ steps, verdict }) {
+  if (!steps?.length) return null
+  const vStyle = verdict ? (VERDICT_STYLE[verdict] ?? VERDICT_STYLE.estable) : null
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+      {/* Chips de intensidad */}
+      <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+        {steps.map((step) => {
+          const cs = CATEGORY_STYLE[step.category] ?? CATEGORY_STYLE["Ruido"]
+          return (
+            <div
+              key={step.minutes}
+              title={`+${step.minutes} min · ${step.dbz.toFixed(1)} dBZ · ${step.category}`}
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                gap: "2px",
+                padding: "4px 8px",
+                borderRadius: "8px",
+                background: cs.bg,
+                border: `1px solid ${cs.border}`,
+                minWidth: "42px",
+              }}
+            >
+              <span style={{ fontSize: "10px", color: theme.textFaint, fontWeight: 600 }}>
+                +{step.minutes}m
+              </span>
+              <span style={{
+                fontSize: "11px",
+                fontWeight: 700,
+                color: cs.color,
+                fontFamily: theme.fontMono,
+                fontVariantNumeric: "tabular-nums",
+              }}>
+                {step.dbz.toFixed(0)}
+              </span>
+            </div>
+          )
+        })}
+      </div>
+
+      {/* Badge de veredicto */}
+      {vStyle && (
+        <span style={{
+          display: "inline-flex",
+          alignItems: "center",
+          gap: "4px",
+          padding: "3px 8px",
+          borderRadius: "6px",
+          background: vStyle.bg,
+          border: `1px solid ${vStyle.border}`,
+          color: vStyle.color,
+          fontSize: "11px",
+          fontWeight: 600,
+          alignSelf: "flex-start",
+        }}>
+          {vStyle.icon} {verdict === "sin_lluvia" ? "Sin lluvia" : verdict.charAt(0).toUpperCase() + verdict.slice(1)}
+        </span>
+      )}
+    </div>
+  )
+}
+
 export default function PointCard({ point, forecast, radar, nowcast, rainviewerUrl, loading = false }) {
   if (loading) {
     return (
@@ -327,6 +412,17 @@ export default function PointCard({ point, forecast, radar, nowcast, rainviewerU
               height="160px"
             />
             <SourceTag source="iam" />
+          </div>
+        )}
+
+        {/* Timeline de intensidad 0/15/30/45 min */}
+        {nowcast?.intensity_timeline?.length > 0 && (
+          <div style={s.section}>
+            <span style={s.label}>Intensidad prevista</span>
+            <IntensityTimeline
+              steps={nowcast.intensity_timeline}
+              verdict={nowcast.intensity_verdict}
+            />
           </div>
         )}
 

@@ -630,6 +630,14 @@ export default function CellMap({
                   Calidad: {(q * 100).toFixed(0)}%<br />
                   {cell.mean_dbz.toFixed(0)} dBZ · {cell.velocity_kmh.toFixed(0)} km/h · {Math.round(cell.bearing_deg)}°<br />
                   Edad: {cell.age_minutes} min · {cell.area_px} px
+                  {cell.eta_minutes != null && (
+                    <><br />
+                      <span style={{ color: "#1D4ED8", fontWeight: 600 }}>
+                        → {cell.eta_point_id} en {cell.eta_minutes} min
+                        {cell.eta_confidence != null && ` (${(cell.eta_confidence * 100).toFixed(0)}%)`}
+                      </span>
+                    </>
+                  )}
                 </div>
               </Tooltip>
             </Marker>

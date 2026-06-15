@@ -116,6 +116,20 @@ class RadarReading(BaseModel):
 
 
 # --------------------------------------------------------------------------- #
+# Timeline de intensidad por punto (Etapa 5)
+# --------------------------------------------------------------------------- #
+
+class IntensityStep(BaseModel):
+    """Un paso del timeline de intensidad de eco en un punto monitoreado."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    minutes: int = Field(..., ge=0, description="Minutos hacia adelante (0/15/30/45)")
+    dbz: float = Field(..., description="Reflectividad estimada en el punto (dBZ)")
+    category: RadarCategory = Field(..., description="Categoría correspondiente al dBZ")
+
+
+# --------------------------------------------------------------------------- #
 # Nowcasting: ETA de lluvia (PRELIMINAR — se refina en Sprint 3)
 # --------------------------------------------------------------------------- #
 
@@ -181,6 +195,15 @@ class NowcastResult(BaseModel):
     leading_edge_distance_km: float | None = Field(
         None, ge=0, description="Distancia al borde de ataque de la celda (menor que al centroide)"
     )
+    # Timeline de intensidad por punto 0/15/30/45 min (Etapa 5)
+    intensity_timeline: list[IntensityStep] | None = Field(
+        default=None,
+        description="Intensidad estimada en el punto a 0/15/30/45 min (backtrace semi-lagrangiano)"
+    )
+    intensity_verdict: str | None = Field(
+        default=None,
+        description="Veredicto de tendencia: empeora | mejora | estable | sin_lluvia"
+    )
     generated_at: datetime
     method: str = Field(
         "unknown",
@@ -218,6 +241,16 @@ class TrackedCellSchema(BaseModel):
         default=0.0, ge=0.0, le=1.0,
         description="Quality score 0–1 (tamaño + forma + persistencia + estabilidad)"
     )
+    # ETA al punto monitoreado más cercano (Etapa 4)
+    eta_minutes: int | None = Field(
+        default=None, ge=0, description="ETA en minutos al punto monitoreado más cercano"
+    )
+    eta_point_id: str | None = Field(
+        default=None, description="ID del punto monitoreado de menor ETA"
+    )
+    eta_confidence: float | None = Field(
+        default=None, ge=0.0, le=1.0, description="Confianza de la ETA al punto más cercano"
+    )
 
 
 class CellDetectionSchema(BaseModel):
@@ -252,6 +285,12 @@ class CellDebugDiagSchema(BaseModel):
     cell_min_px: int
     dbz_threshold: float
     match_max_km: float
+    # Diagnóstico del split de blobs (Etapa 1)
+    det_n_components: int = 0
+    det_n_oversized: int = 0
+    det_n_blob_split: int = 0
+    det_n_split_subcells: int = 0
+    det_n_kept_whole: int = 0
 
 
 class CellDebugSchema(BaseModel):

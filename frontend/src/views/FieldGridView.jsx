@@ -275,13 +275,18 @@ export default function FieldGridView() {
                 <StatCell label="Nuevas" value={cellDiag.n_new} />
                 <StatCell label="Continuadas" value={cellDiag.n_continued} />
                 <StatCell label="Purgadas" value={cellDiag.n_purged} color={cellDiag.n_purged > 0 ? "#D97706" : undefined} />
-                <StatCell label="Split" value={cellDiag.n_split} />
+                <StatCell label="Split (track)" value={cellDiag.n_split} />
                 <StatCell label="Merge" value={cellDiag.n_merge} />
                 <StatCell label="Rechazos gate" value={cellDiag.gate_rejects} />
                 <StatCell label="Costo medio match" value={cellDiag.match_cost_mean != null ? cellDiag.match_cost_mean.toFixed(2) : "—"} />
                 <StatCell label="CELL_MIN_PX" value={cellDiag.cell_min_px} />
                 <StatCell label="DBZ umbral" value={`${cellDiag.dbz_threshold} dBZ`} />
                 <StatCell label="Gate max" value={`${cellDiag.match_max_km} km`} />
+                <StatCell label="Componentes" value={cellDiag.det_n_components ?? "—"} />
+                <StatCell label="Blobs grandes" value={cellDiag.det_n_oversized ?? "—"} color={cellDiag.det_n_oversized > 0 ? "#D97706" : undefined} />
+                <StatCell label="Blobs partidos" value={cellDiag.det_n_blob_split ?? "—"} color={cellDiag.det_n_blob_split > 0 ? "#16A34A" : undefined} />
+                <StatCell label="Sub-celdas" value={cellDiag.det_n_split_subcells ?? "—"} />
+                <StatCell label="Conservados" value={cellDiag.det_n_kept_whole ?? "—"} />
               </div>
               <p style={st.statsNote}>
                 Activa &quot;Celdas&quot; para ver la malla de calidad (verde = alta, rojo = baja).

@@ -18,7 +18,7 @@ from PIL import Image
 from pydantic import BaseModel, Field
 
 from app import config
-from app.nowcast.engine import estimate_arrival
+from app.nowcast.engine import compute_cell_etas, estimate_arrival
 from app.processing.motion import compute_cell_motion, find_context_echoes, find_echo_contours, sample_ring_vectors
 from app.processing.tracking import TrackedCell, detect_cells, detection_mask, update_tracks
 from app.scheduler import RadarState, run_forecast_loop, run_radar_loop
@@ -49,6 +49,7 @@ from app.storage import (
     get_skill_metrics,
     init_db,
     list_points,
+    load_tracking_state,
     seed_points,
     update_point,
 )
@@ -61,12 +62,19 @@ log = logging.getLogger(__name__)
 def _serialize_tracked_cells(
     cells: list,
     interval_seconds: float = 90.0,
+    cell_etas: dict | None = None,
 ) -> list[dict]:
-    """Convierte list[TrackedCell] al shape de TrackedCellSchema para el endpoint."""
+    """Convierte list[TrackedCell] al shape de TrackedCellSchema para el endpoint.
+
+    cell_etas (opcional): dict {cell_id: {eta_minutes, eta_point_id, eta_confidence}}
+    generado por compute_cell_etas. Si se pasa, los 3 campos se fusionan en cada
+    celda (TrackedCellSchema tiene extra="forbid" con esos campos desde Etapa 4).
+    """
     out = []
     for c in cells:
         age_min = round((c.age_frames - 1) * interval_seconds / 60.0, 1)
         track = [[pt[0], pt[1]] for pt in c.centroid_history]
+        eta_info = cell_etas.get(c.id, {}) if cell_etas else {}
         out.append({
             "id": c.id,
             "lat": c.lat,
@@ -79,6 +87,9 @@ def _serialize_tracked_cells(
             "ring": c.ring,
             "track": track,
             "quality": c.quality,
+            "eta_minutes": eta_info.get("eta_minutes"),
+            "eta_point_id": eta_info.get("eta_point_id"),
+            "eta_confidence": eta_info.get("eta_confidence"),
         })
     return out
 
@@ -95,6 +106,31 @@ async def lifespan(app: FastAPI):
     conn = init_db(config.DB_PATH)
     seed_points(conn, config.POINTS)
     state = RadarState()
+
+    # Cargar estado de tracking persistido (sobrevive reinicios/redeploys).
+    # Solo se usa si el estado es reciente (< TRACKING_STATE_MAX_AGE_MIN).
+    try:
+        from datetime import datetime as _dt, timezone as _tz
+        saved_cells, saved_next_id, saved_frame_time = load_tracking_state(conn)
+        if saved_frame_time is not None:
+            age_min = (_dt.now(_tz.utc) - saved_frame_time).total_seconds() / 60.0
+            if age_min <= config.TRACKING_STATE_MAX_AGE_MIN and saved_cells:
+                state.tracked_cells = saved_cells
+                state.next_cell_id = saved_next_id
+                state.last_frame_time = saved_frame_time
+                log.info(
+                    "Estado de tracking restaurado: %d celdas, next_id=%d (age=%.1f min)",
+                    len(saved_cells), saved_next_id, age_min,
+                )
+            else:
+                log.info(
+                    "Estado de tracking descartado: age=%.1f min > %d min (o sin celdas).",
+                    age_min if saved_frame_time else 9999.0,
+                    config.TRACKING_STATE_MAX_AGE_MIN,
+                )
+    except Exception as exc_load:
+        log.warning("Error cargando estado de tracking: %s — empezando limpio.", exc_load)
+
     radar_task = asyncio.create_task(run_radar_loop(conn, state))
     forecast_task = asyncio.create_task(run_forecast_loop(conn))
     app.state.db = conn
@@ -196,7 +232,11 @@ async def get_radar_cells():
     frame_time = (
         state.last_frame_time.isoformat() if state.last_frame_time else None
     )
-    tracks_out = _serialize_tracked_cells(state.tracked_cells, state._cell_interval_s)
+    _cell_etas = compute_cell_etas(
+        state.tracked_cells, list_points(app.state.db),
+        state.last_bounds, state.motion_field_ema,
+    )
+    tracks_out = _serialize_tracked_cells(state.tracked_cells, state._cell_interval_s, _cell_etas)
     diag = state.last_track_diag
     return CellDebugSchema(
         frame_time=frame_time,
@@ -215,6 +255,11 @@ async def get_radar_cells():
             cell_min_px=config.CELL_MIN_PX,
             dbz_threshold=config.DBZ_THRESHOLD,
             match_max_km=config.CELL_MATCH_MAX_KM,
+            det_n_components=diag.get("det_n_components", 0),
+            det_n_oversized=diag.get("det_n_oversized", 0),
+            det_n_blob_split=diag.get("det_n_blob_split", 0),
+            det_n_split_subcells=diag.get("det_n_split_subcells", 0),
+            det_n_kept_whole=diag.get("det_n_kept_whole", 0),
         ),
     )
 
@@ -383,9 +428,15 @@ async def get_radar(point_id: str):
 
         # Celdas rastreadas — siempre disponibles desde el estado del scheduler,
         # independientemente de si hay frames nuevos (warmup = lista vacía).
+        _tc = getattr(state, "tracked_cells", [])
+        _bounds_eta = state.last_bounds
+        _mf_eta = state.motion_field_ema
+        _pts_eta = list_points(app.state.db)
+        _cell_etas_radar = compute_cell_etas(_tc, _pts_eta, _bounds_eta, _mf_eta)
         tracked_cells_out = _serialize_tracked_cells(
-            getattr(state, "tracked_cells", []),
+            _tc,
             getattr(state, "_cell_interval_s", 90.0),
+            _cell_etas_radar,
         )
 
         if not state.available:

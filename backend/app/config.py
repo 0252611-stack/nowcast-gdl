@@ -66,6 +66,18 @@ CELL_HISTORY_LEN: int = 8      # Longitud del historial de centroides por celda
 CELL_MAX_PX: int = 2_000       # área (px) sobre la que se intenta partir el blob
 CELL_SPLIT_DBZ: float = 30.0   # umbral de núcleo convectivo para el split (dBZ)
 
+# --- Persistencia del estado de tracking entre reinicios (Etapa 3) ---
+# Máximo de minutos que puede tener el estado guardado para ser considerado
+# válido al arrancar. Si el estado es más viejo, se descarta y empieza limpio.
+TRACKING_STATE_MAX_AGE_MIN: int = 30
+
+# --- Predicción de posición por regresión lineal (Etapa 2) ---
+# Cuando True, usa numpy.polyfit sobre los últimos CELL_PREDICT_MIN_HISTORY
+# centroides para predecir la posición futura. Si el historial es más corto
+# o la flag es False, cae al _predict_position original (EMA de velocidad).
+CELL_PREDICT_REGRESSION: bool = True
+CELL_PREDICT_MIN_HISTORY: int = 3
+
 # --- Logging y observabilidad ---
 LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
 # Ruta del log JSONL estructurado (una línea por ciclo, para análisis posterior).
@@ -84,6 +96,12 @@ CELL_QUALITY_AREA_REF: int = 300   # area_px en que area_score = 1.0
 CELL_QUALITY_AGE_REF: int = 4      # age_frames en que age_score = 1.0
 # Penalización por ciclos sin match (celda parpadeante/ausente)
 CELL_QUALITY_MISSED_PENALTY: float = 0.15
+
+# --- Timeline de intensidad por punto (Etapa 5) ---
+# Pasos de tiempo en minutos para el backtrace semi-lagrangiano por punto.
+INTENSITY_TIMELINE_STEPS_MIN: tuple = (0, 15, 30, 45)
+# Umbral de diferencia dBZ(45min) − dBZ(0min) para el veredicto empeora/mejora.
+INTENSITY_VERDICT_DBZ_DELTA: float = 3.0
 
 # --- Zonas horarias ---
 TZ_LOCAL = ZoneInfo("America/Mexico_City")

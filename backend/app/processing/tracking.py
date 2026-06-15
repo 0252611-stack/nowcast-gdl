@@ -70,6 +70,82 @@ class TrackedCell:
     quality: float = 0.0
 
 
+def cell_to_dict(cell: TrackedCell) -> dict:
+    """Serialización fiel de TrackedCell → dict JSON-serializable.
+
+    Convierte todos los campos incluyendo datetimes (→ ISO string) y el 3er
+    elemento de cada entrada de centroid_history. NO es la función lossy de
+    main.py (_serialize_tracked_cells): incluye area_history, age_frames, etc.
+    """
+    def _iso(dt: datetime | None) -> str | None:
+        return dt.isoformat() if dt is not None else None
+
+    def _hist_entry(e) -> list:
+        lat, lon = float(e[0]), float(e[1])
+        ts = _iso(e[2]) if len(e) > 2 and isinstance(e[2], datetime) else None
+        return [lat, lon, ts]
+
+    return {
+        "id": cell.id,
+        "lat": cell.lat,
+        "lon": cell.lon,
+        "area_px": cell.area_px,
+        "mean_dbz": cell.mean_dbz,
+        "max_dbz": cell.max_dbz,
+        "ring": cell.ring,
+        "velocity_kmh": cell.velocity_kmh,
+        "bearing_deg": cell.bearing_deg,
+        "centroid_history": [_hist_entry(e) for e in cell.centroid_history],
+        "area_history": list(cell.area_history),
+        "age_frames": cell.age_frames,
+        "first_seen": _iso(cell.first_seen),
+        "last_seen": _iso(cell.last_seen),
+        "accel_kmh_per_min": cell.accel_kmh_per_min,
+        "split_from": cell.split_from,
+        "merged_ids": list(cell.merged_ids),
+        "missed_frames": cell.missed_frames,
+        "quality": cell.quality,
+    }
+
+
+def cell_from_dict(d: dict) -> TrackedCell:
+    """Deserialización fiel de dict → TrackedCell. Inversa de cell_to_dict."""
+    def _dt(s: str | None) -> datetime | None:
+        if s is None:
+            return None
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=__import__("datetime").timezone.utc)
+        return dt
+
+    def _hist_entry(e) -> tuple:
+        lat, lon = float(e[0]), float(e[1])
+        ts = _dt(e[2]) if len(e) > 2 else None
+        return (lat, lon, ts)
+
+    return TrackedCell(
+        id=int(d["id"]),
+        lat=float(d["lat"]),
+        lon=float(d["lon"]),
+        area_px=int(d["area_px"]),
+        mean_dbz=float(d["mean_dbz"]),
+        max_dbz=float(d["max_dbz"]),
+        ring=list(d.get("ring", [])),
+        velocity_kmh=float(d.get("velocity_kmh", 0.0)),
+        bearing_deg=float(d.get("bearing_deg", 0.0)),
+        centroid_history=[_hist_entry(e) for e in d.get("centroid_history", [])],
+        area_history=list(d.get("area_history", [])),
+        age_frames=int(d.get("age_frames", 1)),
+        first_seen=_dt(d.get("first_seen")),
+        last_seen=_dt(d.get("last_seen")),
+        accel_kmh_per_min=float(d.get("accel_kmh_per_min", 0.0)),
+        split_from=d.get("split_from"),
+        merged_ids=list(d.get("merged_ids", [])),
+        missed_frames=int(d.get("missed_frames", 0)),
+        quality=float(d.get("quality", 0.0)),
+    )
+
+
 def _component_to_cell(
     comp_mask: np.ndarray,
     dbz_grid: np.ndarray,
@@ -133,7 +209,8 @@ def detect_cells(
     image: Image.Image,
     bounds: dict[str, float],
     min_px: int | None = None,
-) -> list[dict]:
+    return_diag: bool = False,
+) -> list[dict] | tuple[list[dict], dict]:
     """Detecta celdas de eco significativo en la imagen del radar.
 
     Reutiliza el mismo pipeline morfológico de find_echo_contours (motion.py):
@@ -146,6 +223,8 @@ def detect_cells(
     original se conserva íntegro (degradación con gracia).
 
     Devuelve lista de dicts: {lat, lon, area_px, mean_dbz, max_dbz, ring}.
+    Si return_diag=True devuelve (cells, det_diag) donde det_diag contiene
+    {n_components, n_oversized, n_split, n_split_subcells, n_kept_whole}.
     """
     from app.processing.colormap import DBZ_MIN
 
@@ -158,6 +237,9 @@ def detect_cells(
 
     ys, xs = np.where(alpha > 0)
     if len(xs) == 0:
+        if return_diag:
+            return [], {"det_n_components": 0, "det_n_oversized": 0, "det_n_blob_split": 0,
+                        "det_n_split_subcells": 0, "det_n_kept_whole": 0}
         return []
 
     # Colormap LUT vectorizado: mismo patrón que _upstream_candidates y find_echo_contours
@@ -184,6 +266,13 @@ def detect_cells(
     n_labels, labels = cv2.connectedComponents(mask)
     cells: list[dict] = []
 
+    # Contadores para el diagnóstico del split
+    n_components = 0
+    n_oversized = 0
+    n_split = 0
+    n_split_subcells = 0
+    n_kept_whole = 0
+
     for lbl in range(1, n_labels):
         comp_mask = (labels == lbl).astype(np.uint8) * 255
         comp_ys, _ = np.where(comp_mask > 0)
@@ -191,8 +280,11 @@ def detect_cells(
         if area < min_px:
             continue
 
+        n_components += 1
+
         # Two-level split: blobs grandes se re-segmentan con umbral convectivo
         if area > config.CELL_MAX_PX:
+            n_oversized += 1
             core_mask = (
                 (comp_mask > 0) & (dbz_grid >= config.CELL_SPLIT_DBZ)
             ).astype(np.uint8) * 255
@@ -208,11 +300,25 @@ def detect_cells(
                     sub_cells.append(cell)
             if sub_cells:
                 cells.extend(sub_cells)
+                n_split += 1
+                n_split_subcells += len(sub_cells)
                 continue  # componente grande partida con éxito; omitir original
+            # Sin núcleos válidos → conservar íntegro (degradación con gracia)
 
         cell = _component_to_cell(comp_mask, dbz_grid, bounds, H, W)
         if cell is not None:
             cells.append(cell)
+            n_kept_whole += 1
+
+    if return_diag:
+        det_diag = {
+            "det_n_components": n_components,
+            "det_n_oversized": n_oversized,
+            "det_n_blob_split": n_split,
+            "det_n_split_subcells": n_split_subcells,
+            "det_n_kept_whole": n_kept_whole,
+        }
+        return cells, det_diag
 
     return cells
 
@@ -260,7 +366,7 @@ def _predict_position(
     interval_seconds: float,
     bounds: dict[str, float],
 ) -> tuple[float, float]:
-    """Posición predicha del centroide dt segundos adelante."""
+    """Posición predicha del centroide dt segundos adelante (EMA de velocidad)."""
     if velocity_kmh < 0.1:
         return lat, lon
     dt_h = interval_seconds / 3600.0
@@ -269,6 +375,59 @@ def _predict_position(
     dlat = dist_km * math.cos(brad) / _KM_PER_DEG_LAT
     dlon = dist_km * math.sin(brad) / _km_per_deg_lon(bounds)
     return lat + dlat, lon + dlon
+
+
+def _predict_position_regression(
+    centroid_history: list,
+    interval_seconds: float,
+    bounds: dict[str, float],
+) -> tuple[float, float]:
+    """Predicción por regresión lineal (mínimos cuadrados) sobre el historial de centroides.
+
+    Ajusta lat(t) y lon(t) mediante numpy.polyfit(grado=1) sobre los últimos N
+    puntos y extrapola +interval_seconds segundos. El tiempo t (segundos relativos
+    al primer punto del historial) se extrae del 3er elemento de cada tupla
+    (lat, lon, datetime).
+
+    Invariante de determinismo: polyfit es puramente funcional; sin np.random.
+    Fallback al último centroide si hay menos de 2 puntos con datetimes válidos.
+    """
+    # Extraer tiempos en segundos relativos
+    times: list[float] = []
+    lats: list[float] = []
+    lons: list[float] = []
+    for entry in centroid_history:
+        if len(entry) < 3 or not isinstance(entry[2], datetime):
+            continue
+        lats.append(entry[0])
+        lons.append(entry[1])
+        times.append(entry[2].timestamp())
+
+    if len(times) < 2:
+        # Sin suficiente información → devolver el último centroide
+        last = centroid_history[-1]
+        return float(last[0]), float(last[1])
+
+    t0 = times[0]
+    t_rel = [t - t0 for t in times]
+    t_pred = t_rel[-1] + interval_seconds
+
+    # Regresión lineal grado 1 sobre lat y lon por separado
+    t_arr = np.array(t_rel, dtype=np.float64)
+    lat_arr = np.array(lats, dtype=np.float64)
+    lon_arr = np.array(lons, dtype=np.float64)
+
+    coef_lat = np.polyfit(t_arr, lat_arr, 1)
+    coef_lon = np.polyfit(t_arr, lon_arr, 1)
+
+    pred_lat = float(np.polyval(coef_lat, t_pred))
+    pred_lon = float(np.polyval(coef_lon, t_pred))
+
+    # Sanity clamp: no salir del área del radar
+    pred_lat = max(bounds["south"], min(bounds["north"], pred_lat))
+    pred_lon = max(bounds["west"], min(bounds["east"], pred_lon))
+
+    return pred_lat, pred_lon
 
 
 def _velocity_stability(centroid_history: list) -> float:
@@ -366,9 +525,19 @@ def update_tracks(
     max_missed = config.CELL_MAX_MISSED
     history_len = config.CELL_HISTORY_LEN
 
-    # Posiciones predichas para cada track previo
+    # Posiciones predichas para cada track previo.
+    # Con historial suficiente y CELL_PREDICT_REGRESSION=True, usa regresión lineal;
+    # si no, cae al predictor clásico de EMA de velocidad.
+    def _pred_for_track(t: TrackedCell) -> tuple[float, float]:
+        if (
+            config.CELL_PREDICT_REGRESSION
+            and len(t.centroid_history) >= config.CELL_PREDICT_MIN_HISTORY
+        ):
+            return _predict_position_regression(t.centroid_history, interval_seconds, bounds)
+        return _predict_position(t.lat, t.lon, t.velocity_kmh, t.bearing_deg, interval_seconds, bounds)
+
     predictions: dict[int, tuple[float, float]] = {
-        t.id: _predict_position(t.lat, t.lon, t.velocity_kmh, t.bearing_deg, interval_seconds, bounds)
+        t.id: _pred_for_track(t)
         for t in prev_tracks
     }
 

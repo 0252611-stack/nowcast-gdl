@@ -39,6 +39,121 @@ def _model_prob_at(forecast: PointForecast, arrival_time: datetime) -> float:
     return best.precipitation_probability / 100.0
 
 
+def _project_cell_to_point(
+    cell,
+    point_lat: float,
+    point_lon: float,
+    bounds: dict[str, float],
+    motion_field: "np.ndarray | None" = None,
+    wind_speed: float = 0.0,
+    wind_dir: float = 0.0,
+    horizon_minutes: int = 240,
+) -> dict | None:
+    """Proyecta una celda rastreada hacia un punto y devuelve ETA + metadatos.
+
+    Encapsula: speed-gate (≥1 km/h), cono de dirección (±120° hacia el punto),
+    cálculo del borde de ataque (leading_edge_point), override de velocidad
+    local por motion_field, y project_cell.
+
+    Devuelve {eta_minutes, confidence, edge_dist_km, speed_kmh, bearing_deg}
+    o None si la celda no apunta al punto o no llega en el horizonte.
+    """
+    if cell.velocity_kmh < 1.0:
+        return None
+
+    km_lon = 111.32 * math.cos(math.radians((bounds["north"] + bounds["south"]) / 2))
+    dlat_km = (point_lat - cell.lat) * 111.32
+    dlon_km = (point_lon - cell.lon) * km_lon
+    bearing_to_pt = math.degrees(math.atan2(dlon_km, dlat_km)) % 360
+    ang_diff = abs(((cell.bearing_deg - bearing_to_pt + 180) % 360) - 180)
+    if ang_diff > 120:
+        return None
+
+    # Borde de ataque
+    if cell.ring and len(cell.ring) >= 2:
+        edge_lat, edge_lon, edge_dist_km = leading_edge_point(
+            cell.ring, point_lat, point_lon, bounds
+        )
+    else:
+        edge_lat, edge_lon = cell.lat, cell.lon
+        dlat_km2 = (point_lat - cell.lat) * 111.32
+        dlon_km2 = (point_lon - cell.lon) * km_lon
+        edge_dist_km = math.sqrt(dlat_km2**2 + dlon_km2**2)
+
+    # Velocidad local del campo de movimiento (o velocidad del track)
+    cspeed = cell.velocity_kmh
+    cbearing = cell.bearing_deg
+    if motion_field is not None:
+        v_lat, v_lon = sample_field_at(motion_field, edge_lat, edge_lon, bounds)
+        local_speed, local_bearing = vector_to_speed_bearing(v_lat, v_lon, bounds)
+        if local_speed >= 1.0:
+            cspeed = local_speed
+            cbearing = local_bearing
+
+    proj = project_cell(
+        point_lat, point_lon,
+        edge_dist_km,
+        cspeed,
+        cbearing,
+        bearing_to_pt,
+        wind_speed,
+        wind_dir,
+        horizon_minutes,
+    )
+    if proj["eta_minutes"] is None:
+        return None
+
+    return {
+        "eta_minutes": proj["eta_minutes"],
+        "confidence": proj["confidence"],
+        "edge_dist_km": edge_dist_km,
+        "speed_kmh": cspeed,
+        "bearing_deg": cbearing,
+    }
+
+
+def compute_cell_etas(
+    cells: list,
+    points: list[dict],
+    bounds: dict[str, float] | None,
+    motion_field: "np.ndarray | None" = None,
+) -> dict[int, dict]:
+    """Para cada celda rastreada, calcula la ETA al punto monitoreado más cercano.
+
+    Devuelve {cell_id: {eta_minutes, eta_point_id, eta_confidence}}.
+    Solo considera celdas que apunten (cono ±120°) hacia algún punto.
+    Sin corrección de viento (ETA secundaria — para tooltip del mapa).
+    """
+    if bounds is None or not points:
+        return {}
+
+    result: dict[int, dict] = {}
+    for cell in cells:
+        best_eta: int | None = None
+        best_point_id: str | None = None
+        best_confidence: float | None = None
+
+        for pt in points:
+            proj = _project_cell_to_point(
+                cell, pt["lat"], pt["lon"], bounds, motion_field,
+                wind_speed=0.0, wind_dir=0.0, horizon_minutes=240,
+            )
+            if proj is None:
+                continue
+            if best_eta is None or proj["eta_minutes"] < best_eta:
+                best_eta = proj["eta_minutes"]
+                best_point_id = pt["id"]
+                best_confidence = proj["confidence"]
+
+        if best_eta is not None:
+            result[cell.id] = {
+                "eta_minutes": best_eta,
+                "eta_point_id": best_point_id,
+                "eta_confidence": round(best_confidence, 3) if best_confidence is not None else None,
+            }
+    return result
+
+
 def estimate_arrival(
     point_id: str,
     radar: RadarReading | None,
@@ -70,6 +185,37 @@ def estimate_arrival(
     """
     generated_at = datetime.now(tz=config.TZ_LOCAL)
 
+    # Timeline de intensidad (computable en cualquier momento después de tener frames)
+    _timeline_dict: dict | None = None
+
+    def _get_timeline(img: Image.Image, mf) -> tuple[list | None, str | None]:
+        """Calcula el timeline semi-lagrangiano para el punto. Lazy y una sola vez."""
+        nonlocal _timeline_dict
+        if _timeline_dict is None:
+            try:
+                from app.processing.predict import point_intensity_timeline
+                from app.schemas import IntensityStep
+                result_tl = point_intensity_timeline(
+                    forecast.lat, forecast.lon, img, mf, bounds,
+                    steps_min=config.INTENSITY_TIMELINE_STEPS_MIN,
+                )
+                _timeline_dict = result_tl
+            except Exception as exc_tl:
+                log.debug("Timeline de intensidad no disponible: %s", exc_tl)
+                return None, None
+        if _timeline_dict is None:
+            return None, None
+        from app.schemas import IntensityStep, RadarCategory
+        steps = [
+            IntensityStep(
+                minutes=s["minutes"],
+                dbz=s["dbz"],
+                category=RadarCategory(s["category"]),
+            )
+            for s in _timeline_dict["steps"]
+        ]
+        return steps, _timeline_dict.get("verdict")
+
     def _result(**kw) -> NowcastResult:
         defaults = dict(
             point_id=point_id,
@@ -86,6 +232,8 @@ def estimate_arrival(
             cell_id=None,
             cell_age_minutes=None,
             leading_edge_distance_km=None,
+            intensity_timeline=None,
+            intensity_verdict=None,
         )
         defaults.update(kw)
         return NowcastResult(**defaults)
@@ -140,6 +288,10 @@ def estimate_arrival(
     trend = _clamp(trend, -1.0, 1.0)
     mult_trend = _clamp(1 + 0.5 * trend, 0.5, 1.2)
 
+    # Timeline de intensidad: pre-computar una vez con la imagen más nueva.
+    _newer_pil_img = Image.open(io.BytesIO(newer_bytes))
+    _tl_steps, _tl_verdict = _get_timeline(_newer_pil_img, motion_field)
+
     # 5a. Ruta preferente: celdas rastreadas (Capa 2+3 — cell_tracking).
     #     Si hay celdas con identidad persistente, usar borde de ataque + velocidad
     #     por celda. Fallback al camino por píxeles si no hay celdas válidas.
@@ -156,56 +308,22 @@ def estimate_arrival(
         best_ct_bearing_to_pt: float = 0.0
 
         for cell in tracked_cells:
-            # Solo celdas que se mueven hacia el punto (cono ±120°)
-            if cell.velocity_kmh < 1.0:
-                continue
-            dlat_km = (forecast.lat - cell.lat) * 111.32
-            km_lon = 111.32 * math.cos(math.radians((bounds["north"] + bounds["south"]) / 2))
-            dlon_km = (forecast.lon - cell.lon) * km_lon
-            bearing_to_pt = math.degrees(math.atan2(dlon_km, dlat_km)) % 360
-            ang_diff = abs(((cell.bearing_deg - bearing_to_pt + 180) % 360) - 180)
-            if ang_diff > 120:
-                continue
-
-            # Borde de ataque (Capa 3)
-            if cell.ring and len(cell.ring) >= 2:
-                edge_lat, edge_lon, edge_dist_km = leading_edge_point(
-                    cell.ring, forecast.lat, forecast.lon, bounds
-                )
-            else:
-                dlat_km2 = (forecast.lat - cell.lat) * 111.32
-                dlon_km2 = (forecast.lon - cell.lon) * km_lon
-                edge_dist_km = math.sqrt(dlat_km2**2 + dlon_km2**2)
-                edge_lat, edge_lon = cell.lat, cell.lon
-
-            # Velocidad del campo local en el borde, o velocidad del track
-            cspeed = cell.velocity_kmh
-            cbearing = cell.bearing_deg
-            if motion_field is not None:
-                v_lat, v_lon = sample_field_at(
-                    motion_field, edge_lat, edge_lon, bounds
-                )
-                local_speed, local_bearing = vector_to_speed_bearing(v_lat, v_lon, bounds)
-                if local_speed >= 1.0:
-                    cspeed = local_speed
-                    cbearing = local_bearing
-
-            proj = project_cell(
-                forecast.lat, forecast.lon,
-                edge_dist_km,
-                cspeed,
-                cbearing,
-                bearing_to_pt,
-                wind_speed_700_ct,
-                wind_dir_700_ct,
-                horizon_minutes,
+            proj = _project_cell_to_point(
+                cell, forecast.lat, forecast.lon, bounds, motion_field,
+                wind_speed=wind_speed_700_ct, wind_dir=wind_dir_700_ct,
+                horizon_minutes=horizon_minutes,
             )
-            if proj["eta_minutes"] is None:
+            if proj is None:
                 continue
+            # Recalcular bearing_to_pt para exponerlo en el resultado
+            km_lon_ct = 111.32 * math.cos(math.radians((bounds["north"] + bounds["south"]) / 2))
+            dlat_km_ct = (forecast.lat - cell.lat) * 111.32
+            dlon_km_ct = (forecast.lon - cell.lon) * km_lon_ct
+            bearing_to_pt = math.degrees(math.atan2(dlon_km_ct, dlat_km_ct)) % 360
             if best_ct_proj is None or proj["eta_minutes"] < best_ct_proj["eta_minutes"]:
                 best_ct_proj = proj
                 best_ct_cell = cell
-                best_ct_edge_dist = edge_dist_km
+                best_ct_edge_dist = proj["edge_dist_km"]
                 best_ct_bearing_to_pt = bearing_to_pt
 
         if best_ct_proj is not None and best_ct_cell is not None:
@@ -263,6 +381,8 @@ def estimate_arrival(
                 cell_id=cell.id,
                 cell_age_minutes=age_minutes,
                 leading_edge_distance_km=round(best_ct_edge_dist, 2) if best_ct_edge_dist is not None else None,
+                intensity_timeline=_tl_steps,
+                intensity_verdict=_tl_verdict,
                 method="cell_tracking",
             )
         # Sin celda válida → fallback al camino por píxeles (advection)
@@ -378,5 +498,7 @@ def estimate_arrival(
         conf_radar=round(conf_radar, 3),
         weight_radar=round(w, 3),
         mult_trend=round(mult_trend, 3),
+        intensity_timeline=_tl_steps,
+        intensity_verdict=_tl_verdict,
         method="advection",
     )

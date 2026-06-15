@@ -9,6 +9,14 @@ from pathlib import Path
 from app.schemas import NowcastResult, RadarCategory, RadarReading
 
 _DDL = """
+CREATE TABLE IF NOT EXISTS tracking_state (
+    id            INTEGER PRIMARY KEY CHECK(id = 1),
+    cells_json    TEXT    NOT NULL,
+    next_cell_id  INTEGER NOT NULL,
+    frame_time_utc TEXT   NOT NULL,
+    updated_at    TEXT    NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS monitored_points (
     id         TEXT PRIMARY KEY,
     name       TEXT NOT NULL,
@@ -390,6 +398,64 @@ def purge_old_predictions(conn: sqlite3.Connection, retention_hours: int = 168) 
     )
     conn.commit()
     return cursor.rowcount
+
+
+# ---------------------------------------------------------------------------
+# Persistencia del estado de tracking (Etapa 3)
+# ---------------------------------------------------------------------------
+
+def save_tracking_state(
+    conn: sqlite3.Connection,
+    cells: list,
+    next_cell_id: int,
+    frame_time: datetime | None,
+) -> None:
+    """Persiste el estado de tracking (celdas + next_cell_id) en fila única.
+
+    Importa cell_to_dict aquí (import tardío) para evitar dependencia circular
+    entre storage.py y tracking.py. Usa INSERT OR REPLACE para mantener 1 fila.
+    """
+    import json as _json
+    from app.processing.tracking import cell_to_dict
+
+    cells_json = _json.dumps([cell_to_dict(c) for c in cells])
+    frame_iso = frame_time.isoformat() if frame_time is not None else datetime.now(timezone.utc).isoformat()
+    now_iso = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        """INSERT OR REPLACE INTO tracking_state
+           (id, cells_json, next_cell_id, frame_time_utc, updated_at)
+           VALUES (1, ?, ?, ?, ?)""",
+        (cells_json, next_cell_id, frame_iso, now_iso),
+    )
+    conn.commit()
+
+
+def load_tracking_state(
+    conn: sqlite3.Connection,
+) -> "tuple[list, int, datetime | None]":
+    """Carga el estado de tracking guardado.
+
+    Devuelve (cells, next_cell_id, frame_time_utc) o ([], 1, None) si no hay
+    estado o si ocurre un error de deserialización (arranque limpio).
+    """
+    import json as _json
+    from app.processing.tracking import cell_from_dict
+
+    row = conn.execute(
+        "SELECT cells_json, next_cell_id, frame_time_utc FROM tracking_state WHERE id = 1"
+    ).fetchone()
+    if row is None:
+        return [], 1, None
+    cells_json, next_cell_id, frame_time_str = row
+    try:
+        raw_cells = _json.loads(cells_json)
+        cells = [cell_from_dict(d) for d in raw_cells]
+        frame_time = datetime.fromisoformat(frame_time_str)
+        if frame_time.tzinfo is None:
+            frame_time = frame_time.replace(tzinfo=timezone.utc)
+        return cells, int(next_cell_id), frame_time
+    except Exception:
+        return [], 1, None
 
 
 # ---------------------------------------------------------------------------

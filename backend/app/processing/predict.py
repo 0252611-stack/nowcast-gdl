@@ -420,3 +420,118 @@ def build_prediction(
         "bounds": bounds,
         "method": method,
     }
+
+
+# ---------------------------------------------------------------------------
+# Timeline de intensidad por punto — backtrace semi-lagrangiano (Etapa 5)
+# ---------------------------------------------------------------------------
+
+def point_intensity_timeline(
+    point_lat: float,
+    point_lon: float,
+    current_image: "Image.Image",
+    motion_field: "np.ndarray | None",
+    bounds: dict[str, float],
+    steps_min: tuple = (0, 15, 30, 45),
+) -> dict:
+    """Estima la intensidad de eco en un punto a 0/15/30/45 min hacia adelante.
+
+    Usa backtrace semi-lagrangiano: el eco que estará sobre el punto en +Δ min
+    se origina en ``(point − v·Δ)``, donde v es el campo de movimiento en el punto.
+    Congelar el campo (no advectar globalmente) es correcto para 0–45 min y mucho
+    más barato que build_prediction.
+
+    Devuelve::
+
+        {
+          "steps": [{"minutes": int, "dbz": float, "category": str}, ...],
+          "verdict": str   # "empeora" | "mejora" | "estable" | "sin_lluvia"
+        }
+
+    Determinista: sin np.random; función pura del estado (imagen + campo).
+    """
+    from app.processing.colormap import DBZ_MIN, DBZ_MAX, dbz_to_category
+    from app.processing.motion import sample_field_at
+    from app import config as _config
+
+    steps_out: list[dict] = []
+
+    # Vector de movimiento en el punto (grados/min)
+    if motion_field is not None:
+        v_lat, v_lon = sample_field_at(motion_field, point_lat, point_lon, bounds)
+    else:
+        v_lat, v_lon = 0.0, 0.0
+
+    # Necesitamos muestrear dBZ del frame actual usando el pipeline de colormap
+    from app.processing.pixel_extract import _get_colormap
+    cmap = _get_colormap()
+    cmap_colors = np.array(list(cmap.keys()), dtype=np.float32)
+    cmap_dbzs = np.array(list(cmap.values()), dtype=np.float32)
+
+    img_rgba = np.array(current_image.convert("RGBA"))
+    H, W = img_rgba.shape[:2]
+    north = bounds["north"]
+    south = bounds["south"]
+    east = bounds["east"]
+    west = bounds["west"]
+
+    def _sample_dbz(lat: float, lon: float) -> float:
+        """Muestrea dBZ en una vecindad 5×5 centrada en (lat, lon)."""
+        cx = int(round((lon - west) / (east - west) * W))
+        cy = int(round((north - lat) / (north - south) * H))
+        best_dbz = DBZ_MIN
+        neighborhood = 2  # ventana 5×5 (igual que reading_for_point)
+        for dy in range(-neighborhood, neighborhood + 1):
+            for dx in range(-neighborhood, neighborhood + 1):
+                px, py = cx + dx, cy + dy
+                if not (0 <= px < W and 0 <= py < H):
+                    continue
+                r, g, b, a = int(img_rgba[py, px, 0]), int(img_rgba[py, px, 1]), \
+                              int(img_rgba[py, px, 2]), int(img_rgba[py, px, 3])
+                if a == 0:
+                    continue  # fondo transparente = sin eco
+                color_vec = np.array([r, g, b], dtype=np.float32)
+                diffs_sq = ((cmap_colors - color_vec[np.newaxis, :]) ** 2).sum(axis=1)
+                best_idx = int(diffs_sq.argmin())
+                dbz = float(cmap_dbzs[best_idx])
+                if dbz > best_dbz:
+                    best_dbz = dbz
+        return max(DBZ_MIN, min(DBZ_MAX, best_dbz))
+
+    for delta_min in steps_min:
+        # Backtrace: el eco que llega al punto en +Δ está ahora en (point − v·Δ)
+        src_lat = point_lat - v_lat * delta_min
+        src_lon = point_lon - v_lon * delta_min
+
+        # Clampar al bounds del radar
+        src_lat = max(south, min(north, src_lat))
+        src_lon = max(west, min(east, src_lon))
+
+        try:
+            dbz = _sample_dbz(src_lat, src_lon)
+        except Exception:
+            dbz = DBZ_MIN  # fuera del radar → sin eco
+
+        cat = dbz_to_category(dbz)
+        steps_out.append({
+            "minutes": delta_min,
+            "dbz": round(float(dbz), 1),
+            "category": cat.value,
+        })
+
+    # Veredicto: comparar dbz[último] − dbz[primero]
+    rain_threshold = _config.DBZ_RAIN_THRESHOLD
+    all_below_rain = all(s["dbz"] < rain_threshold for s in steps_out)
+    if all_below_rain:
+        verdict = "sin_lluvia"
+    else:
+        delta_dbz = steps_out[-1]["dbz"] - steps_out[0]["dbz"]
+        thresh = _config.INTENSITY_VERDICT_DBZ_DELTA
+        if delta_dbz > thresh:
+            verdict = "empeora"
+        elif delta_dbz < -thresh:
+            verdict = "mejora"
+        else:
+            verdict = "estable"
+
+    return {"steps": steps_out, "verdict": verdict}

@@ -11,9 +11,11 @@ from app.storage import (
     get_latest_reading,
     get_recent_frames,
     init_db,
+    load_tracking_state,
     purge_old_frames,
     save_frame,
     save_reading,
+    save_tracking_state,
 )
 
 
@@ -156,3 +158,108 @@ def test_get_eta_stability_calculates_jitter_and_method_changes(db):
     assert len(row["series"]) == 4   # todos en la serie
     assert row["current_method"] == "advection"
     assert row["last_eta"] == 20
+
+
+# ---------------------------------------------------------------------------
+# Persistencia del estado de tracking (Etapa 3)
+# ---------------------------------------------------------------------------
+
+class TestTrackingState:
+    """Round-trip save → load preserva todos los campos; guard de antigüedad funciona."""
+
+    def _make_cell(self, cell_id: int = 1) -> "TrackedCell":
+        from app.processing.tracking import TrackedCell
+        t0 = datetime(2026, 6, 15, 20, 0, 0, tzinfo=timezone.utc)
+        t1 = datetime(2026, 6, 15, 20, 1, 30, tzinfo=timezone.utc)
+        return TrackedCell(
+            id=cell_id,
+            lat=20.683,
+            lon=-103.442,
+            area_px=500,
+            mean_dbz=32.5,
+            max_dbz=45.0,
+            ring=[[20.683, -103.442], [20.684, -103.441]],
+            velocity_kmh=35.2,
+            bearing_deg=225.0,
+            centroid_history=[(20.68, -103.44, t0), (20.683, -103.442, t1)],
+            area_history=[480, 500],
+            age_frames=3,
+            first_seen=t0,
+            last_seen=t1,
+            accel_kmh_per_min=1.5,
+            split_from=None,
+            merged_ids=[],
+            missed_frames=0,
+            quality=0.75,
+        )
+
+    def test_round_trip_preserves_all_fields(self, db):
+        """save → load devuelve celdas con todos los campos intactos."""
+        cell = self._make_cell(1)
+        frame_time = datetime(2026, 6, 15, 20, 1, 30, tzinfo=timezone.utc)
+        save_tracking_state(db, [cell], next_cell_id=2, frame_time=frame_time)
+
+        cells, next_id, ft = load_tracking_state(db)
+        assert next_id == 2
+        assert ft is not None
+        assert ft.tzinfo is not None
+        assert len(cells) == 1
+        c = cells[0]
+        assert c.id == cell.id
+        assert c.lat == pytest.approx(cell.lat)
+        assert c.lon == pytest.approx(cell.lon)
+        assert c.area_px == cell.area_px
+        assert c.mean_dbz == pytest.approx(cell.mean_dbz)
+        assert c.velocity_kmh == pytest.approx(cell.velocity_kmh)
+        assert c.bearing_deg == pytest.approx(cell.bearing_deg)
+        assert c.age_frames == cell.age_frames
+        assert c.quality == pytest.approx(cell.quality)
+        assert len(c.centroid_history) == len(cell.centroid_history)
+        assert len(c.area_history) == len(cell.area_history)
+        # Datetimes deben ser tz-aware y coincidir
+        assert c.first_seen is not None and c.first_seen.tzinfo is not None
+        assert c.last_seen is not None and c.last_seen.tzinfo is not None
+        assert abs((c.first_seen - cell.first_seen).total_seconds()) < 1
+        # centroid_history: el 3er elemento debe ser datetime tz-aware
+        for entry in c.centroid_history:
+            assert isinstance(entry[2], datetime), f"centroid_history entry no tiene datetime: {entry}"
+            assert entry[2].tzinfo is not None
+
+    def test_load_returns_empty_when_no_state(self, db):
+        """Sin estado guardado → ([], 1, None)."""
+        cells, next_id, ft = load_tracking_state(db)
+        assert cells == []
+        assert next_id == 1
+        assert ft is None
+
+    def test_multiple_cells_round_trip(self, db):
+        """Múltiples celdas se guardan y cargan correctamente."""
+        cells = [self._make_cell(i) for i in range(1, 4)]
+        frame_time = datetime(2026, 6, 15, 20, 0, 0, tzinfo=timezone.utc)
+        save_tracking_state(db, cells, next_cell_id=4, frame_time=frame_time)
+        loaded, next_id, _ = load_tracking_state(db)
+        assert len(loaded) == 3
+        assert next_id == 4
+        assert {c.id for c in loaded} == {1, 2, 3}
+
+    def test_overwrite_replaces_previous_state(self, db):
+        """Segunda llamada a save reemplaza la primera (fila única)."""
+        c1 = self._make_cell(1)
+        c2 = self._make_cell(2)
+        frame_time = datetime(2026, 6, 15, 20, 0, 0, tzinfo=timezone.utc)
+        save_tracking_state(db, [c1], next_cell_id=2, frame_time=frame_time)
+        save_tracking_state(db, [c1, c2], next_cell_id=3, frame_time=frame_time)
+        loaded, next_id, _ = load_tracking_state(db)
+        assert len(loaded) == 2
+        assert next_id == 3
+
+    def test_corrupt_state_returns_clean(self, db):
+        """Estado corrupto (JSON inválido) → arranque limpio sin excepción."""
+        db.execute(
+            """INSERT OR REPLACE INTO tracking_state (id, cells_json, next_cell_id, frame_time_utc, updated_at)
+               VALUES (1, 'NOT_VALID_JSON', 5, '2026-06-15T20:00:00+00:00', '2026-06-15T20:00:00+00:00')"""
+        )
+        db.commit()
+        cells, next_id, ft = load_tracking_state(db)
+        assert cells == []
+        assert next_id == 1

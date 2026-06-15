@@ -38,6 +38,7 @@ from app.storage import (
     save_frame,
     save_prediction,
     save_reading,
+    save_tracking_state,
     verify_predictions,
 )
 
@@ -147,7 +148,7 @@ async def run_radar_loop(conn: sqlite3.Connection, state: RadarState) -> None:
                     from PIL import Image as _Image
                     newer_bytes_track, newer_time_track = frames_for_motion[0]
                     img_track = _Image.open(_io.BytesIO(newer_bytes_track))
-                    dets = detect_cells(img_track, state.last_bounds)
+                    dets, det_diag = detect_cells(img_track, state.last_bounds, return_diag=True)
                     interval_track = 90.0
                     if len(frames_for_motion) >= 2:
                         _, older_time_track = frames_for_motion[1]
@@ -159,9 +160,18 @@ async def run_radar_loop(conn: sqlite3.Connection, state: RadarState) -> None:
                         state.tracked_cells, dets, newer_time_track,
                         state.last_bounds, interval_track, state.next_cell_id,
                     )
+                    # Fusionar diagnóstico del split en el dict de tracking
+                    track_diag = {**track_diag, **det_diag}
                     state.last_detections = dets
                     state.last_track_diag = track_diag
                     state.last_frame_time = newer_time_track
+                    # Persistir estado de tracking (1 upsert/ciclo ≈ despreciable)
+                    try:
+                        save_tracking_state(
+                            conn, state.tracked_cells, state.next_cell_id, state.last_frame_time
+                        )
+                    except Exception as exc_sv:
+                        log.debug("Error guardando estado de tracking: %s", exc_sv)
                 except Exception as exc_tr:
                     log.warning("Error en tracking de celdas: %s", exc_tr)
 

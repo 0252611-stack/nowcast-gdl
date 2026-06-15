@@ -1261,3 +1261,173 @@ Tests nuevos:
 **Tests:** 187/187 ✅ | **Lint:** 0 warnings ✅ | **Build:** ✅
 
 **Push pendiente** — con consentimiento explícito del usuario.
+
+---
+
+## Sesión 11 — 15 jun 2026 — Diagnóstico split, regresión de posición, persistencia de tracking, ETA por celda y timeline de intensidad
+
+### Objetivo
+
+Subir la calidad del motor de celdas/malla en cinco frentes:
+
+1. **Diagnóstico del split de blobs** — datos observables para calibrar `CELL_SPLIT_DBZ`.
+2. **Predicción de posición por regresión lineal** — `numpy.polyfit` sobre el historial de centroides.
+3. **Persistencia del estado de tracking** entre reinicios del backend (SQLite, volumen Railway).
+4. **ETA por celda** — cada celda rastreada muestra su ETA al punto monitoreado más cercano.
+5. **Timeline de intensidad por punto** — 0/15/30/45 min con veredicto empeora/mejora/estable/sin_lluvia.
+
+**Mejora diferida por decisión del usuario:** closing morfológico adaptativo.
+
+---
+
+### Etapa 1 — Diagnóstico del split de blobs ✅
+
+**Archivos:** `backend/app/processing/tracking.py`, `backend/app/scheduler.py`,
+`backend/app/schemas.py`, `frontend/src/api.js`, `frontend/src/views/FieldGridView.jsx`
+
+- `detect_cells` acepta nuevo param opcional `return_diag: bool = False`.
+  Cuando `True`, devuelve `(cells, det_diag)` donde `det_diag` tiene las claves
+  `det_n_components`, `det_n_oversized`, `det_n_blob_split`, `det_n_split_subcells`,
+  `det_n_kept_whole`. El early-return para imagen vacía usa los mismos nombres `det_`.
+  Backward-compatible: los llamadores existentes sin el flag reciben solo `cells`.
+- `scheduler.py`: llamada con `return_diag=True`, fusiona `det_diag` en `track_diag`
+  (conviven por prefijo `det_` vs. los ya existentes de tracking).
+- `CellDebugDiagSchema` (schemas.py) y typedef `CellDebugDiag` (api.js) ampliados
+  con los 5 campos `det_` (mismo commit, default=0 para backward compat).
+- `FieldGridView.jsx`: 5 nuevas StatCells "Componentes", "Blobs grandes" (ámbar si >0),
+  "Blobs partidos" (verde si >0), "Sub-celdas", "Conservados". "Split" renombrado a
+  "Split (track)" para distinguir del split de blobs.
+- Tests nuevos: `TestDetectCellsDiag` (4 tests: compatibilidad, tuple, conteo, imagen vacía).
+
+**Compuerta 1:** `pytest tests/test_tracking.py -q` — 44 tests ✅
+
+---
+
+### Etapa 2 — Predicción por regresión lineal ✅
+
+**Archivos:** `backend/app/processing/tracking.py`, `backend/app/config.py`
+
+- Nuevo helper `_predict_position_regression(centroid_history, interval_seconds, bounds)`:
+  ajusta lat(t) y lon(t) por `numpy.polyfit(grado=1)` sobre los últimos N centroides;
+  extrapola `+interval_seconds` en el futuro. Determinista (polyfit puro).
+- `update_tracks`: closure `_pred_for_track(t)` usa regresión cuando
+  `config.CELL_PREDICT_REGRESSION and len(t.centroid_history) >= config.CELL_PREDICT_MIN_HISTORY`;
+  con historial <3 cae al `_predict_position` original.
+- Constantes nuevas en `config.py`:
+  `CELL_PREDICT_REGRESSION: bool = True`, `CELL_PREDICT_MIN_HISTORY: int = 3`.
+- Tests nuevos: `TestRegressionPrediction` (3 tests: precisión en línea recta,
+  determinismo, fallback con historial corto).
+
+**Compuerta 2:** `pytest tests/test_tracking.py -q` — 44 tests ✅
+
+---
+
+### Etapa 3 — Persistencia del estado de tracking ✅
+
+**Archivos:** `backend/app/processing/tracking.py`, `backend/app/storage.py`,
+`backend/app/scheduler.py`, `backend/app/main.py`, `backend/app/config.py`
+
+- **Serializadores fieles** en `tracking.py`:
+  `cell_to_dict(cell)` y `cell_from_dict(d)` — round-trip completo de todos los campos
+  incluyendo `centroid_history` (3-tupla con datetime), `area_history`, `first_seen`,
+  `last_seen`. NO reusan `_serialize_tracked_cells` (es lossy).
+- **Tabla nueva** en `storage.py`: `tracking_state(id INTEGER PK CHECK(id=1),
+  cells_json TEXT, next_cell_id INTEGER, frame_time_utc TEXT, updated_at TEXT)`.
+  Helpers: `save_tracking_state(conn, cells, next_id, frame_time)` (INSERT OR REPLACE)
+  y `load_tracking_state(conn) -> (list[TrackedCell], int, datetime|None)` (try/except
+  → inicio limpio si falla la deserialización).
+- `scheduler.py`: llama `save_tracking_state` tras cada `update_tracks` (1 upsert/90 s).
+- `main.py` lifespan: carga el estado tras `init_db`; guard de antigüedad
+  `<= config.TRACKING_STATE_MAX_AGE_MIN` (30 min); estado viejo → inicio limpio.
+- Constante nueva: `TRACKING_STATE_MAX_AGE_MIN: int = 30`.
+- Tests nuevos: `TestTrackingState` en `test_storage.py` (5 tests: round-trip completo,
+  estado vacío, celdas múltiples, upsert/sobreescritura, JSON corrupto → inicio limpio).
+
+**Compuerta 3:** `pytest tests/ -q` — 13 tests de storage ✅, suite completa ✅
+
+---
+
+### Etapa 4 — ETA por celda (schema + frontend) ✅
+
+**Archivos:** `backend/app/nowcast/engine.py`, `backend/app/schemas.py`,
+`frontend/src/api.js`, `backend/app/main.py`, `frontend/src/components/CellMap.jsx`
+
+- **Helper compartido** `_project_cell_to_point(cell, point_lat, point_lon, bounds,
+  motion_field, wind_speed, wind_dir, horizon_minutes) -> dict | None`:
+  encapsula speed-gate ≥1 km/h, cono ±120°, `leading_edge_point`, override de
+  velocidad por campo local, `project_cell`. Devuelve
+  `{eta_minutes, confidence, edge_dist_km, speed_kmh, bearing_deg}` o None.
+  `estimate_arrival` refactorizado para usarlo (sin cambiar su salida).
+- **`compute_cell_etas(cells, points, bounds, motion_field) -> dict[int, dict]`**:
+  por celda, proyecta a todos los puntos, elige el de menor ETA; devuelve
+  `{cell_id: {eta_minutes, eta_point_id, eta_confidence}}`. Sin corrección de
+  viento (la ETA autoritativa sigue en `NowcastResult`).
+- **Schema** (`TrackedCellSchema`, mismo commit que `api.js`): `eta_minutes: int | None`,
+  `eta_point_id: str | None`, `eta_confidence: float | None`.
+- `main.py`: `_serialize_tracked_cells` acepta `cell_etas` dict y fusiona los 3 campos.
+  Los endpoints `/radar` y `/radar/cells` llaman `compute_cell_etas` y pasan el resultado.
+- `CellMap.jsx`: tooltip de celda rastreada muestra "→ {eta_point_id} en {eta_minutes} min
+  ({eta_confidence}%)" cuando `eta_minutes != null`.
+- Tests nuevos: `TestComputeCellEtas` en `test_nowcast.py` (3 tests: elige el punto
+  más cercano, no ETA para celda alejándose, inputs vacíos).
+
+**Compuerta 4:** `pytest tests/test_nowcast.py -q` — 33 tests ✅
+
+---
+
+### Etapa 5 — Timeline de intensidad por punto (schema + frontend) ✅
+
+**Archivos:** `backend/app/processing/predict.py`, `backend/app/nowcast/engine.py`,
+`backend/app/schemas.py`, `frontend/src/api.js`,
+`frontend/src/components/PointCard.jsx`, `backend/app/config.py`
+
+- **`point_intensity_timeline(point_lat, point_lon, current_image, motion_field,
+  bounds, steps_min=(0,15,30,45)) -> dict`** en `predict.py`:
+  backtrace semi-lagrangiano por punto — el eco que estará sobre el punto en +Δ min
+  está ahora en `punto − v·Δ`. Por paso: muestreo 5×5 vecindario, `dbz_to_category`.
+  Veredicto: `dbz[−1] − dbz[0] > INTENSITY_VERDICT_DBZ_DELTA` → "empeora";
+  `< -delta` → "mejora"; si todos < `DBZ_RAIN_THRESHOLD` → "sin_lluvia"; si no → "estable".
+- `estimate_arrival` en `engine.py`: llama al timeline y añade los campos al `NowcastResult`.
+  Lazy (solo si hay campo de movimiento disponible).
+- **Schema** (mismo commit que `api.js`):
+  nuevo modelo `IntensityStep {minutes:int, dbz:float, category:RadarCategory}`;
+  `NowcastResult` += `intensity_timeline: list[IntensityStep] | None` y
+  `intensity_verdict: str | None`.
+- **`PointCard.jsx`** (frontend):
+  - Componente `IntensityTimeline({steps, verdict})`: 4 chips coloreados por categoría
+    (Ruido=gris, Débil=azul claro, Ligera=verde, Moderada a fuerte=naranja, Granizo=rojo)
+    mostrando minutos y dBZ; badge de veredicto (↑empeora/↓mejora/→estable/—sin_lluvia)
+    con colores semánticos.
+  - Sección renderizada entre el mini-mapa de nube causante y la barra de confianza.
+- Constantes nuevas en `config.py`:
+  `INTENSITY_TIMELINE_STEPS_MIN: tuple = (0, 15, 30, 45)`,
+  `INTENSITY_VERDICT_DBZ_DELTA: float = 3.0`.
+
+**Compuerta 5:** `pytest tests/ -x -q` — **202/202 ✅** | `npm run lint` 0 warnings ✅ |
+`npm run build` ✅
+
+---
+
+### Resumen de cambios de la sesión
+
+| Archivo | Cambio |
+|---|---|
+| `backend/app/config.py` | 6 constantes nuevas |
+| `backend/app/processing/tracking.py` | `return_diag`, `_predict_position_regression`, `cell_to_dict/from_dict` |
+| `backend/app/storage.py` | Tabla `tracking_state` + `save/load_tracking_state` |
+| `backend/app/scheduler.py` | Wire diag split + `save_tracking_state` |
+| `backend/app/main.py` | Carga estado en lifespan + `compute_cell_etas` en serialización |
+| `backend/app/nowcast/engine.py` | `_project_cell_to_point`, `compute_cell_etas`, timeline |
+| `backend/app/processing/predict.py` | `point_intensity_timeline` |
+| `backend/app/schemas.py` | `IntensityStep`, `TrackedCellSchema` (+3 ETA), `NowcastResult` (+timeline+verdict), `CellDebugDiagSchema` (+5 det_) |
+| `frontend/src/api.js` | Typedefs pareados (mismo commit que schemas.py) |
+| `frontend/src/components/CellMap.jsx` | ETA en tooltip de celda |
+| `frontend/src/components/PointCard.jsx` | `IntensityTimeline` component + sección 0/15/30/45 + veredicto |
+| `frontend/src/views/FieldGridView.jsx` | 5 StatCells de blobs + renombrado "Split (track)" |
+| `backend/tests/test_tracking.py` | `TestDetectCellsDiag` + `TestRegressionPrediction` |
+| `backend/tests/test_storage.py` | `TestTrackingState` |
+| `backend/tests/test_nowcast.py` | `TestComputeCellEtas` |
+
+**Tests:** 202/202 ✅ | **Lint:** 0 warnings ✅ | **Build:** ✅
+
+**Push pendiente** — con consentimiento explícito del usuario.

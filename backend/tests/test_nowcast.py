@@ -638,3 +638,62 @@ def test_engine_cell_tracking_mult_trend_from_history():
 
     if result.method == "cell_tracking" and result.mult_trend is not None:
         assert result.mult_trend > 1.0, "Eco creciente debe dar mult_trend > 1"
+
+
+# ── compute_cell_etas (Etapa 4) ───────────────────────────────────────────────
+
+class TestComputeCellEtas:
+    """compute_cell_etas elige el punto con menor ETA por celda."""
+
+    def _make_cell_for_eta(self, cell_id: int, lat: float, lon: float,
+                           velocity_kmh: float, bearing_deg: float):
+        from app.processing.tracking import TrackedCell
+        from datetime import datetime, timezone
+        t0 = datetime(2026, 6, 15, 20, 0, 0, tzinfo=timezone.utc)
+        return TrackedCell(
+            id=cell_id, lat=lat, lon=lon, area_px=600, mean_dbz=35.0, max_dbz=45.0,
+            ring=[[lat, lon]], velocity_kmh=velocity_kmh, bearing_deg=bearing_deg,
+            centroid_history=[(lat, lon, t0)], area_history=[600], age_frames=2,
+            first_seen=t0, last_seen=t0, missed_frames=0, quality=0.6,
+        )
+
+    def test_picks_nearest_point(self):
+        """Celda moviéndose hacia el norte: el punto más cercano en esa dirección
+        tiene menor ETA y debe ser elegido."""
+        from app.nowcast.engine import compute_cell_etas
+
+        # Celda moviéndose hacia el norte (bearing=0°) a 40 km/h
+        # desde lat=20.5, lon=-103.3
+        cell = self._make_cell_for_eta(1, 20.5, -103.3, velocity_kmh=40.0, bearing_deg=0.0)
+
+        # Punto cercano al norte de la celda (~5 km)
+        pt_near = {"id": "north_near", "lat": 20.55, "lon": -103.3}
+        # Punto lejano al norte (~20 km)
+        pt_far = {"id": "north_far", "lat": 20.7, "lon": -103.3}
+
+        etas = compute_cell_etas([cell], [pt_near, pt_far], BOUNDS, motion_field=None)
+        assert 1 in etas, "La celda debe tener ETA a algún punto"
+        # El punto más cercano al norte debe ser elegido (menor ETA)
+        assert etas[1]["eta_point_id"] == "north_near", (
+            f"Se esperaba 'north_near' pero se obtuvo '{etas[1]['eta_point_id']}'"
+        )
+        assert etas[1]["eta_minutes"] is not None
+
+    def test_no_eta_for_cell_not_approaching(self):
+        """Celda alejándose de todos los puntos → sin ETA."""
+        from app.nowcast.engine import compute_cell_etas
+
+        # Celda moviéndose al sur (bearing=180°) desde lat=20.8 — puntos al norte
+        cell = self._make_cell_for_eta(1, 20.8, -103.3, velocity_kmh=40.0, bearing_deg=180.0)
+        # Solo punto al norte de la celda → fuera del cono ±120° mirando al sur
+        pts = [{"id": "north_pt", "lat": 21.0, "lon": -103.3}]
+        etas = compute_cell_etas([cell], pts, BOUNDS, motion_field=None)
+        assert 1 not in etas, "Celda alejándose no debe tener ETA"
+
+    def test_empty_inputs(self):
+        """Sin celdas o sin puntos → dict vacío."""
+        from app.nowcast.engine import compute_cell_etas
+        assert compute_cell_etas([], [], BOUNDS, None) == {}
+        cell = self._make_cell_for_eta(1, 20.5, -103.3, 40.0, 0.0)
+        assert compute_cell_etas([cell], [], BOUNDS, None) == {}
+        assert compute_cell_etas([], [{"id": "x", "lat": 20.5, "lon": -103.3}], BOUNDS, None) == {}

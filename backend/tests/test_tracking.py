@@ -614,3 +614,90 @@ class TestBlobSplit:
         cells = detect_cells(img, local_bounds, min_px=config.CELL_MIN_PX)
         # Blob pequeño → exactamente 1 celda (sin split)
         assert len(cells) == 1, f"Blob pequeño no debe partirse; obtenido {len(cells)}"
+
+
+# ── Diagnóstico del split (Etapa 1) ──────────────────────────────────────────
+
+class TestDetectCellsDiag:
+    """detect_cells con return_diag=True: coherencia de los contadores."""
+
+    def test_return_diag_backward_compatible(self):
+        """Sin return_diag el resultado sigue siendo list[dict]."""
+        img = Image.open(io.BytesIO(_frame1_bytes()))
+        result = detect_cells(img, BOUNDS)
+        assert isinstance(result, list)
+
+    def test_return_diag_gives_tuple(self):
+        """Con return_diag=True devuelve (list, dict) con todos los campos."""
+        img = Image.open(io.BytesIO(_frame1_bytes()))
+        result = detect_cells(img, BOUNDS, return_diag=True)
+        assert isinstance(result, tuple) and len(result) == 2
+        cells, diag = result
+        assert isinstance(cells, list)
+        for key in ("det_n_components", "det_n_oversized", "det_n_blob_split",
+                    "det_n_split_subcells", "det_n_kept_whole"):
+            assert key in diag, f"Clave '{key}' ausente en det_diag"
+
+    def test_diag_conserved_equals_components_minus_splits(self):
+        """n_kept_whole + n_blob_split == n_components (sin contar sub-celdas extra)."""
+        img = Image.open(io.BytesIO(_frame1_bytes()))
+        _, diag = detect_cells(img, BOUNDS, return_diag=True)
+        assert diag["det_n_kept_whole"] + diag["det_n_blob_split"] == diag["det_n_components"]
+
+    def test_diag_empty_image_all_zeros(self):
+        """Imagen transparente → todos los contadores a cero."""
+        img = Image.new("RGBA", (100, 100), (0, 0, 0, 0))
+        cells, diag = detect_cells(img, BOUNDS, return_diag=True)
+        assert cells == []
+        assert diag["det_n_components"] == 0
+        assert diag["det_n_oversized"] == 0
+
+
+# ── Predicción por regresión (Etapa 2) ────────────────────────────────────────
+
+class TestRegressionPrediction:
+    """_predict_position_regression: celda en movimiento lineal → predicción precisa."""
+
+    def test_regression_prediction_matches_linear_motion(self):
+        """Celda que se mueve a velocidad constante (N → NE) → la regresión cae
+        cerca de la posición extrapolada (+1 intervalo = 90 s más adelante)."""
+        from datetime import timedelta
+        from app.processing.tracking import _predict_position_regression
+
+        # 5 puntos en línea recta: 0.01° lat/lon cada 90 s
+        step_lat = 0.01
+        step_lon = 0.01
+        base_t = datetime(2026, 6, 11, 20, 0, 0, tzinfo=timezone.utc)
+        times = [base_t + timedelta(seconds=i * 90) for i in range(5)]
+        history = [(20.0 + i * step_lat, -103.0 + i * step_lon, times[i]) for i in range(5)]
+
+        pred_lat, pred_lon = _predict_position_regression(history, 90.0, BOUNDS)
+        expected_lat = 20.0 + 5 * step_lat
+        expected_lon = -103.0 + 5 * step_lon
+
+        assert abs(pred_lat - expected_lat) < 0.002, (
+            f"lat predicha {pred_lat:.5f} difiere de {expected_lat:.5f}")
+        assert abs(pred_lon - expected_lon) < 0.002, (
+            f"lon predicha {pred_lon:.5f} difiere de {expected_lon:.5f}")
+
+    def test_regression_deterministic(self):
+        """Dos llamadas idénticas → mismo resultado."""
+        from datetime import timedelta
+        from app.processing.tracking import _predict_position_regression
+
+        base_t = datetime(2026, 6, 11, 20, 0, 0, tzinfo=timezone.utc)
+        times = [base_t + timedelta(seconds=i * 90) for i in range(4)]
+        history = [(20.0 + i * 0.01, -103.0 + i * 0.01, times[i]) for i in range(4)]
+
+        r1 = _predict_position_regression(history, 90.0, BOUNDS)
+        r2 = _predict_position_regression(history, 90.0, BOUNDS)
+        assert r1 == r2, f"No determinista: {r1} vs {r2}"
+
+    def test_regression_falls_back_for_short_history(self):
+        """Con historial < 2 entradas válidas → devuelve el último centroide."""
+        from app.processing.tracking import _predict_position_regression
+
+        # Historial con 1 punto → fallback al último centroide
+        history = [(20.5, -103.5, datetime(2026, 6, 11, 20, 0, 0, tzinfo=timezone.utc))]
+        lat, lon = _predict_position_regression(history, 90.0, BOUNDS)
+        assert lat == 20.5 and lon == -103.5
