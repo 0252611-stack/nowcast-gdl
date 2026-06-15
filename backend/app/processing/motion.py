@@ -57,10 +57,19 @@ def dense_motion_field(
 
     flow = cv2.calcOpticalFlowFarneback(
         prev, nxt, None,
-        pyr_scale=0.5, levels=3, winsize=15,
-        iterations=3, poly_n=5, poly_sigma=1.2,
+        pyr_scale=config.FLOW_PYR_SCALE,
+        levels=config.FLOW_LEVELS,
+        winsize=config.FLOW_WINSIZE,
+        iterations=config.FLOW_ITERATIONS,
+        poly_n=config.FLOW_POLY_N,
+        poly_sigma=config.FLOW_POLY_SIGMA,
         flags=0,
     )  # H×W×2: flow[y,x] = (dx,dy) en píxeles/frame
+
+    if config.FLOW_SMOOTH_KSIZE > 0:
+        k = config.FLOW_SMOOTH_KSIZE
+        flow[:, :, 0] = cv2.GaussianBlur(flow[:, :, 0], (k, k), 0)
+        flow[:, :, 1] = cv2.GaussianBlur(flow[:, :, 1], (k, k), 0)
 
     # Convertir a grados/minuto por píxel
     minutes_per_frame = interval_seconds / 60.0

@@ -30,6 +30,7 @@ export default function FieldGridView() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
 
+  const [showMesh, setShowMesh] = useState(true)
   const [showRadar, setShowRadar] = useState(true)
   const [showPoints, setShowPoints] = useState(true)
   const [showCells, setShowCells] = useState(false)
@@ -118,10 +119,9 @@ export default function FieldGridView() {
     <div style={st.container}>
       <div style={st.header}>
         <div>
-          <h2 style={st.title}>Malla de vectores — campo de movimiento</h2>
+          <h2 style={st.title}>All data</h2>
           <p style={st.subtitle}>
-            Puntos muestreados del optical flow denso dentro de cada contorno de eco.
-            Cada punto muestra la dirección y velocidad local del campo en esa celda.
+            Malla de optical flow, celdas rastreadas y diagnóstico del motor de nowcasting.
           </p>
         </div>
       </div>
@@ -134,6 +134,8 @@ export default function FieldGridView() {
           {/* Toggles */}
           <div style={st.toggleBar} role="group" aria-label="Capas del mapa">
             {[
+              { key: "mesh", label: "Malla", val: showMesh, set: setShowMesh,
+                title: "Mostrar/ocultar la malla de vectores del campo óptico" },
               { key: "radar", label: "Radar", val: showRadar, set: setShowRadar },
               { key: "cells", label: "Celdas", val: showCells, set: setShowCells,
                 badge: trackedCells.length || null,
@@ -192,7 +194,7 @@ export default function FieldGridView() {
               showContours
               showArrows={false}
               showPoints={showPoints}
-              showMesh
+              showMesh={showMesh}
               showCells={showCells}
               trackedCells={trackedCells}
               rawDetections={rawDetections}
@@ -219,23 +221,25 @@ export default function FieldGridView() {
             </div>
           )}
 
-          {/* Leyenda de velocidad */}
-          <div style={st.legend}>
-            <span style={st.legendTitle}>Velocidad del campo:</span>
-            {[
-              { color: "#16A34A", label: "≥ 30 km/h — confiable" },
-              { color: "#D97706", label: "10–29 km/h — moderado" },
-              { color: "#6B7280", label: "< 10 km/h — débil (posible ruido)" },
-            ].map(({ color, label }) => (
-              <span key={color} style={st.legendItem}>
-                <svg width="14" height="14" viewBox="0 0 14 14" style={{ flexShrink: 0 }}>
-                  <circle cx="7" cy="7" r="2" fill={color} />
-                  <polygon points="7,1 10,7 7,5.5 4,7" fill={color} />
-                </svg>
-                {label}
-              </span>
-            ))}
-          </div>
+          {/* Leyenda de velocidad — solo cuando la malla está visible */}
+          {showMesh && (
+            <div style={st.legend}>
+              <span style={st.legendTitle}>Velocidad del campo:</span>
+              {[
+                { color: "#16A34A", label: "≥ 30 km/h — confiable" },
+                { color: "#D97706", label: "10–29 km/h — moderado" },
+                { color: "#6B7280", label: "< 10 km/h — débil (posible ruido)" },
+              ].map(({ color, label }) => (
+                <span key={color} style={st.legendItem}>
+                  <svg width="14" height="14" viewBox="0 0 14 14" style={{ flexShrink: 0 }}>
+                    <circle cx="7" cy="7" r="2" fill={color} />
+                    <polygon points="7,1 10,7 7,5.5 4,7" fill={color} />
+                  </svg>
+                  {label}
+                </span>
+              ))}
+            </div>
+          )}
 
           {/* Panel de skill (calidad del motor de predicciones) */}
           {skillMetrics && skillMetrics.verified > 0 && (() => {

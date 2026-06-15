@@ -70,6 +70,65 @@ class TrackedCell:
     quality: float = 0.0
 
 
+def _component_to_cell(
+    comp_mask: np.ndarray,
+    dbz_grid: np.ndarray,
+    bounds: dict[str, float],
+    H: int,
+    W: int,
+) -> dict | None:
+    """Convierte una máscara binaria de componente a dict de celda, o None si vacía."""
+    comp_ys, comp_xs = np.where(comp_mask > 0)
+    area = int(comp_ys.size)
+    if area == 0:
+        return None
+
+    north, south, east, west = bounds["north"], bounds["south"], bounds["east"], bounds["west"]
+
+    cx = float(comp_xs.mean())
+    cy = float(comp_ys.mean())
+    lat = float(north - (cy / H) * (north - south))
+    lon = float(west + (cx / W) * (east - west))
+
+    pixel_dbzs = dbz_grid[comp_ys, comp_xs]
+    mean_dbz = float(pixel_dbzs.mean())
+    max_dbz = float(pixel_dbzs.max())
+
+    ring: list[list[float]] = []
+    solidity: float = 1.0
+    extent: float = 1.0
+    contours_c, _ = cv2.findContours(comp_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if contours_c:
+        c = max(contours_c, key=cv2.contourArea)
+        hull = cv2.convexHull(c)
+        hull_area = cv2.contourArea(hull)
+        if hull_area > 0:
+            solidity = min(1.0, float(area) / hull_area)
+        _, _, bw, bh = cv2.boundingRect(c)
+        bbox_area = bw * bh
+        if bbox_area > 0:
+            extent = min(1.0, float(area) / bbox_area)
+        simplified = cv2.approxPolyDP(c, 0.3, True)
+        if len(simplified) >= 3:
+            for pt in simplified:
+                x, y = float(pt[0][0]), float(pt[0][1])
+                ring.append([
+                    round(float(north - (y / H) * (north - south)), 5),
+                    round(float(west + (x / W) * (east - west)), 5),
+                ])
+
+    return {
+        "lat": round(lat, 5),
+        "lon": round(lon, 5),
+        "area_px": area,
+        "mean_dbz": round(mean_dbz, 1),
+        "max_dbz": round(max_dbz, 1),
+        "ring": ring,
+        "solidity": round(solidity, 3),
+        "extent": round(extent, 3),
+    }
+
+
 def detect_cells(
     image: Image.Image,
     bounds: dict[str, float],
@@ -81,6 +140,10 @@ def detect_cells(
     colormap LUT → máscara dBZ ≥ DBZ_THRESHOLD → MORPH_CLOSE → dilate →
     connectedComponents. Umbral de área = CELL_MIN_PX (mayor que los contornos
     de visualización, para filtrar ruido y ecos muy pequeños).
+
+    Componentes con área > CELL_MAX_PX se re-segmentan con el umbral convectivo
+    CELL_SPLIT_DBZ (two-level threshold). Si no hay núcleos válidos el componente
+    original se conserva íntegro (degradación con gracia).
 
     Devuelve lista de dicts: {lat, lon, area_px, mean_dbz, max_dbz, ring}.
     """
@@ -118,66 +181,38 @@ def detect_cells(
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k)
     mask = cv2.dilate(mask, k, iterations=1)
 
-    north, south, east, west = bounds["north"], bounds["south"], bounds["east"], bounds["west"]
-
     n_labels, labels = cv2.connectedComponents(mask)
     cells: list[dict] = []
 
     for lbl in range(1, n_labels):
         comp_mask = (labels == lbl).astype(np.uint8) * 255
-        comp_ys, comp_xs = np.where(comp_mask > 0)
+        comp_ys, _ = np.where(comp_mask > 0)
         area = int(comp_ys.size)
         if area < min_px:
             continue
 
-        # Centroide geográfico
-        cx = float(comp_xs.mean())
-        cy = float(comp_ys.mean())
-        lat = float(north - (cy / H) * (north - south))
-        lon = float(west + (cx / W) * (east - west))
+        # Two-level split: blobs grandes se re-segmentan con umbral convectivo
+        if area > config.CELL_MAX_PX:
+            core_mask = (
+                (comp_mask > 0) & (dbz_grid >= config.CELL_SPLIT_DBZ)
+            ).astype(np.uint8) * 255
+            n_core, core_labels = cv2.connectedComponents(core_mask)
+            sub_cells: list[dict] = []
+            for core_lbl in range(1, n_core):
+                sub_mask = (core_labels == core_lbl).astype(np.uint8) * 255
+                sub_ys, _ = np.where(sub_mask > 0)
+                if sub_ys.size < min_px:
+                    continue
+                cell = _component_to_cell(sub_mask, dbz_grid, bounds, H, W)
+                if cell is not None:
+                    sub_cells.append(cell)
+            if sub_cells:
+                cells.extend(sub_cells)
+                continue  # componente grande partida con éxito; omitir original
 
-        # Estadísticas dBZ
-        pixel_dbzs = dbz_grid[comp_ys, comp_xs]
-        mean_dbz = float(pixel_dbzs.mean())
-        max_dbz = float(pixel_dbzs.max())
-
-        # Contorno + métricas de forma (solidity, extent) para quality score
-        ring: list[list[float]] = []
-        solidity: float = 1.0
-        extent: float = 1.0
-        contours_c, _ = cv2.findContours(comp_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        if contours_c:
-            c = max(contours_c, key=cv2.contourArea)
-            # Solidity: área real / área del convex hull (1.0 = forma convexa perfecta).
-            # Clip a 1.0: cv2.contourArea puede dar hull_area < area real por artefactos subpíxel.
-            hull = cv2.convexHull(c)
-            hull_area = cv2.contourArea(hull)
-            if hull_area > 0:
-                solidity = min(1.0, float(area) / hull_area)
-            # Extent: área real / área del bounding box (1.0 = rectángulo lleno).
-            _, _, bw, bh = cv2.boundingRect(c)
-            bbox_area = bw * bh
-            if bbox_area > 0:
-                extent = min(1.0, float(area) / bbox_area)
-            simplified = cv2.approxPolyDP(c, 0.3, True)
-            if len(simplified) >= 3:
-                for pt in simplified:
-                    x, y = float(pt[0][0]), float(pt[0][1])
-                    ring.append([
-                        round(float(north - (y / H) * (north - south)), 5),
-                        round(float(west + (x / W) * (east - west)), 5),
-                    ])
-
-        cells.append({
-            "lat": round(lat, 5),
-            "lon": round(lon, 5),
-            "area_px": area,
-            "mean_dbz": round(mean_dbz, 1),
-            "max_dbz": round(max_dbz, 1),
-            "ring": ring,
-            "solidity": round(solidity, 3),
-            "extent": round(extent, 3),
-        })
+        cell = _component_to_cell(comp_mask, dbz_grid, bounds, H, W)
+        if cell is not None:
+            cells.append(cell)
 
     return cells
 
@@ -236,18 +271,53 @@ def _predict_position(
     return lat + dlat, lon + dlon
 
 
+def _velocity_stability(centroid_history: list) -> float:
+    """Estabilidad de velocidad y rumbo derivada del historial de centroides.
+
+    Necesita ≥3 puntos; devuelve 0.0 (neutro) para historiales más cortos.
+    No depende de bounds: usa deltas lat/lon como proxy de magnitud (ratio → cancela
+    la escala). Circular variance de rumbos + CV de rapideces → score 0–1.
+    """
+    if len(centroid_history) < 3:
+        return 0.0
+
+    bearings_rad: list[float] = []
+    speeds: list[float] = []
+    for i in range(1, len(centroid_history)):
+        dlat = centroid_history[i][0] - centroid_history[i - 1][0]
+        dlon = centroid_history[i][1] - centroid_history[i - 1][1]
+        mag = math.sqrt(dlat ** 2 + dlon ** 2)
+        speeds.append(mag)
+        bearings_rad.append(math.atan2(dlon, dlat))
+
+    n = len(bearings_rad)
+    sin_m = sum(math.sin(b) for b in bearings_rad) / n
+    cos_m = sum(math.cos(b) for b in bearings_rad) / n
+    bearing_score = math.sqrt(sin_m ** 2 + cos_m ** 2)  # resultant length [0,1]
+
+    mean_s = sum(speeds) / n
+    if mean_s < 1e-9:
+        speed_score = 0.0  # celda estacionaria → sin señal de velocidad
+    else:
+        std_s = math.sqrt(sum((s - mean_s) ** 2 for s in speeds) / n)
+        speed_score = max(0.0, 1.0 - std_s / mean_s)
+
+    return 0.5 * bearing_score + 0.5 * speed_score
+
+
 def _cell_quality(
     area_px: int,
     solidity: float,
     age_frames: int,
     area_history: list[int],
     missed_frames: int,
+    centroid_history: list | None = None,
 ) -> float:
     """Quality score determinista 0–1 para una celda rastreada.
 
-    Función de: tamaño normalizado, compacidad de forma, persistencia y
-    estabilidad del área histórica. Penalización por ciclos sin match.
-    Solo diagnóstico — no altera la ETA.
+    Función de: tamaño normalizado, compacidad de forma, persistencia,
+    estabilidad del área histórica y estabilidad de velocidad/rumbo.
+    Penalización por ciclos sin match. Solo diagnóstico — no altera la ETA.
     """
     area_ref = max(1, config.CELL_QUALITY_AREA_REF)
     age_ref = max(1, config.CELL_QUALITY_AGE_REF)
@@ -256,23 +326,25 @@ def _cell_quality(
     solidity_score = max(0.0, min(1.0, solidity))
     age_score = min(1.0, (age_frames - 1) / age_ref)
 
-    # Estabilidad: coeficiente de variación del área histórica (CV bajo → score alto)
+    # Estabilidad de área: CV bajo → score alto
     if len(area_history) >= 2:
         mean_a = sum(area_history) / len(area_history)
         std_a = math.sqrt(sum((x - mean_a) ** 2 for x in area_history) / len(area_history))
         cv = std_a / max(1, mean_a)
         stability_score = max(0.0, 1.0 - cv)
     else:
-        stability_score = 0.0  # un solo frame → sin historial de estabilidad
+        stability_score = 0.0
+
+    velocity_score = _velocity_stability(centroid_history or [])
 
     raw = (
         config.CELL_QUALITY_W_AREA * area_score
         + config.CELL_QUALITY_W_SOLIDITY * solidity_score
         + config.CELL_QUALITY_W_AGE * age_score
         + config.CELL_QUALITY_W_STABILITY * stability_score
+        + config.CELL_QUALITY_W_VELOCITY * velocity_score
     )
-    # Penalización por ciclos sin match (celda parpadeante)
-    penalty = 0.15 * missed_frames
+    penalty = config.CELL_QUALITY_MISSED_PENALTY * missed_frames
     return round(max(0.0, min(1.0, raw - penalty)), 3)
 
 
@@ -411,6 +483,7 @@ def update_tracks(
                     _new_age,
                     _new_area_hist,
                     0,
+                    centroid_history=(t.centroid_history + [(det["lat"], det["lon"], scan_time)])[-history_len:],
                 ),
             ))
         else:
@@ -467,6 +540,7 @@ def update_tracks(
                 1,
                 [det["area_px"]],
                 0,
+                centroid_history=[(det["lat"], det["lon"], scan_time)],
             ),
         ))
         next_id += 1

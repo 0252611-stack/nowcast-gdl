@@ -1116,3 +1116,148 @@ individuales de tamaño razonable (~0.1–0.2° span).
 - `npm run lint` 0 warnings ✅ | `npm run build` ✅
 - Verificado en https://nowcast-gdl.vercel.app/malla con lluvia activa.
 - 2 commits pusheados a `origin/master`.
+
+---
+
+## Sesión 10 — 15 jun 2026 — Calidad del motor: flow smoothing, split de blobs y quality velocity
+
+### Objetivo
+
+Mejorar la calidad del motor en tres frentes (A–C del plan aprobado) y mejorar
+la UX de `/malla` (D–E): renombrar la sección y hacer la malla toggleable.
+
+---
+
+### Etapa A — Suavizado del campo óptico (Farneback) ✅
+
+**Archivos:** `backend/app/config.py`, `backend/app/processing/motion.py`
+
+**Constantes nuevas en `config.py`:**
+```python
+FLOW_PYR_SCALE = 0.5  # escala entre niveles de pirámide
+FLOW_LEVELS    = 3    # niveles de pirámide
+FLOW_WINSIZE   = 25   # ↑ de 15 → mayor coherencia a escala de tormenta
+FLOW_ITERATIONS = 3
+FLOW_POLY_N    = 5
+FLOW_POLY_SIGMA = 1.2
+FLOW_SMOOTH_KSIZE = 9  # kernel GaussianBlur post-flow; 0 = desactivado
+```
+
+**`motion.py` → `dense_motion_field`:**
+- Reemplaza parámetros hardcodeados de `calcOpticalFlowFarneback` por las 6
+  constantes del config.
+- Añade post-procesado determinista: si `FLOW_SMOOTH_KSIZE > 0`, aplica
+  `cv2.GaussianBlur` separadamente sobre `flow[:,:,0]` y `flow[:,:,1]`
+  (componentes u/v). Solo cv2, sin scipy. Preserva dtype float32.
+
+**Invariantes:** shape/dtype `(H,W,2)/float32` inalterado; mismo-frame → RMS<0.01;
+eastward shift → bearing dentro de 60° de 90°. **Compuerta A:** 40/40 tests ✅
+
+---
+
+### Etapa B — Split de blobs gigantes (two-level threshold) ✅
+
+**Archivos:** `backend/app/processing/tracking.py`, `backend/app/config.py`
+
+**Causa raíz identificada en Sesión 9:** `cv2.connectedComponents` a `DBZ_THRESHOLD=18`
+une todo el eco estratiforme en un solo componente gigante de ~770 px (todo el AMG).
+
+**Fix: two-level threshold estilo TITAN:**
+1. **Helper `_component_to_cell(comp_mask, dbz_grid, bounds, H, W) → dict|None`**
+   Extrae la lógica de centroide / dBZ-stats / contorno / solidity / extent
+   a un helper reutilizable (DRY: antes duplicada inline en el loop).
+
+2. **Loop de detección en `detect_cells`:**
+   Para cada componente con `area > config.CELL_MAX_PX`:
+   - Construye `core_mask = (comp_mask > 0) & (dbz_grid >= config.CELL_SPLIT_DBZ)`
+   - Corre `connectedComponents` sobre la máscara de núcleos convectivos
+   - Cada núcleo con `area ≥ min_px` → celda individual via `_component_to_cell`
+   - Si ningún núcleo válido → conserva el componente original (degradación con gracia)
+
+**Constantes nuevas en `config.py`:**
+```python
+CELL_MAX_PX    = 2_000   # área sobre la que se intenta el split
+CELL_SPLIT_DBZ = 30.0    # umbral de núcleo convectivo para el split (dBZ)
+```
+
+**El filtro `ringLatSpan > 0.3°` del frontend** se mantiene como red de seguridad;
+con el split activo, el blob gigante ya no debería activarse en condiciones reales.
+
+**Compuerta B:** `TestDetectCells` + `TestBlobSplit` (nuevo). Tests: 37/37 ✅
+
+---
+
+### Etapa C — Quality score con estabilidad de velocidad ✅
+
+**Archivos:** `backend/app/processing/tracking.py`, `backend/app/config.py`
+
+**Helper `_velocity_stability(centroid_history) → float` (nuevo):**
+- Necesita ≥3 centroides; devuelve 0.0 (neutro) con historiales más cortos.
+- Calcula vectores paso a paso (dlat, dlon) sobre el historial de centroides.
+- Score = 0.5 × (resultant length de bearing) + 0.5 × (1 - CV de rapideces)
+- No requiere `bounds`; usa deltas lat/lon como proxy de magnitud (ratio cancela escala).
+- Determinista: misma historia → mismo score.
+
+**`_cell_quality` actualizado:**
+- Nueva firma: `_cell_quality(..., centroid_history=None)` — backward compatible.
+- Añade término `CELL_QUALITY_W_VELOCITY * velocity_score`.
+- Usa `config.CELL_QUALITY_MISSED_PENALTY` (antes hardcodeado como 0.15).
+- Pesos re-balanceados para sumar 1.0:
+  ```
+  W_AREA=0.30, W_SOLIDITY=0.25, W_AGE=0.15, W_STABILITY=0.15, W_VELOCITY=0.15
+  ```
+
+**`update_tracks` actualizado:**
+- Matched tracks: pasa `centroid_history=nuevo_historial_combinado` a `_cell_quality`.
+- Nuevas celdas: pasa `centroid_history=[(lat, lon, scan_time)]`.
+
+**Nuevas constantes en `config.py`:**
+```python
+CELL_QUALITY_W_VELOCITY      = 0.15
+CELL_QUALITY_MISSED_PENALTY  = 0.15
+# pesos anteriores ajustados: W_SOLIDITY 0.30→0.25, W_AGE 0.20→0.15, W_STABILITY 0.20→0.15
+```
+
+**Compuerta C:** `TestQualityScore` (todas las monotonías pasan) + nuevos tests de
+`_velocity_stability` (neutro con <3 centroides, score alto para movimiento constante).
+Tests: 37/37 ✅
+
+---
+
+### Suite completa: 187/187 ✅ (183 base + 4 nuevos)
+
+Tests nuevos:
+- `TestBlobSplit::test_two_nuclei_blob_splits_into_multiple_cells`
+- `TestBlobSplit::test_small_blob_not_split`
+- `TestQualityScore::test_velocity_stability_neutral_for_short_history`
+- `TestQualityScore::test_velocity_stability_high_for_consistent_motion`
+
+---
+
+### Etapa D — Renombrar "Malla" → "All data" ✅
+
+**Archivos:** `frontend/src/App.jsx`, `frontend/src/views/FieldGridView.jsx`
+
+- `App.jsx:136`: label del `NavLink` "Malla" → **"All data"** (ruta `/malla` conservada).
+- `FieldGridView.jsx`: `<h2>` "Malla de vectores — campo de movimiento" → **"All data"**.
+- Subtítulo actualizado a "Malla de optical flow, celdas rastreadas y diagnóstico del motor de nowcasting."
+
+---
+
+### Etapa E — Toggle de la capa malla ✅
+
+**Archivo:** `frontend/src/views/FieldGridView.jsx`
+
+- Estado nuevo: `const [showMesh, setShowMesh] = useState(true)` — arranca encendido.
+- Botón "Malla" añadido al comienzo del `toggleBar` con `aria-pressed` y `title`.
+- `<CellMap showMesh={showMesh} ...>` — antes hardcodeado como `showMesh` (prop implícito `true`).
+- Leyenda de velocidad envuelta en `{showMesh && (...)}` — se oculta cuando la malla está apagada.
+- `CellMap.jsx` no requirió cambios: ya respetaba `showMesh` en el render de mesh-cells y vectores.
+
+---
+
+### Estado final
+
+**Tests:** 187/187 ✅ | **Lint:** 0 warnings ✅ | **Build:** ✅
+
+**Push pendiente** — con consentimiento explícito del usuario.

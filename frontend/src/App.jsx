@@ -134,7 +134,7 @@ export default function App() {
                 Predicción
               </NavLink>
               <NavLink to="/malla" style={({ isActive }) => isActive ? st.navLinkActive : st.navLink}>
-                Malla
+                All data
               </NavLink>
               <NavLink to="/admin" style={({ isActive }) => isActive ? st.navLinkActive : st.navLink}>
                 Admin

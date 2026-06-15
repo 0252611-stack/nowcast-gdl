@@ -501,3 +501,116 @@ class TestQualityScore:
         q_ok = _cell_quality(500, 0.8, 3, [500, 480, 510], missed_frames=0)
         q_missed = _cell_quality(500, 0.8, 3, [500, 480, 510], missed_frames=1)
         assert q_missed < q_ok
+
+    def test_velocity_stability_neutral_for_short_history(self):
+        """_velocity_stability devuelve 0.0 con <3 centroides."""
+        from app.processing.tracking import _velocity_stability
+        assert _velocity_stability([]) == 0.0
+        assert _velocity_stability([(20.0, -103.0, T0)]) == 0.0
+        assert _velocity_stability([(20.0, -103.0, T0), (20.1, -103.1, T1)]) == 0.0
+
+    def test_velocity_stability_high_for_consistent_motion(self):
+        """_velocity_stability es > 0.5 para movimiento constante en dirección fija."""
+        from app.processing.tracking import _velocity_stability
+        history = [
+            (20.0, -103.0, T0),
+            (20.1, -102.9, T1),
+            (20.2, -102.8, T2),
+            (20.3, -102.7, T2),
+        ]
+        score = _velocity_stability(history)
+        assert score > 0.5, f"Movimiento constante debe dar score > 0.5; obtenido {score}"
+
+
+# ── two-level blob split ───────────────────────────────────────────────────────
+
+class TestBlobSplit:
+    """Verifica que componentes con area > CELL_MAX_PX se re-segmentan
+    usando el umbral convectivo CELL_SPLIT_DBZ (two-level threshold)."""
+
+    def test_two_nuclei_blob_splits_into_multiple_cells(self):
+        """Dos núcleos convectivos conectados por eco débil → ≥2 celdas tras split."""
+        from app.processing.pixel_extract import _get_colormap
+
+        cmap = _get_colormap()
+        # Buscar color de "puente" (DBZ_THRESHOLD ≤ dbz < CELL_SPLIT_DBZ)
+        # y color de "núcleo" (dbz ≥ CELL_SPLIT_DBZ)
+        sorted_entries = sorted(cmap.items(), key=lambda x: x[1])
+        bridge_color = next(
+            (rgb for rgb, dbz in sorted_entries
+             if config.DBZ_THRESHOLD <= dbz < config.CELL_SPLIT_DBZ),
+            None,
+        )
+        core_color = next(
+            (rgb for rgb, dbz in sorted_entries if dbz >= config.CELL_SPLIT_DBZ),
+            None,
+        )
+        if bridge_color is None or core_color is None:
+            pytest.skip("Colormap sin colores en los rangos de umbral requeridos")
+
+        # Imagen 300×200: dos núcleos (30×60 px cada uno) unidos por puente (140×20 px)
+        # Área total ≈ 2*1800 + 2800 = 6400 px >> CELL_MAX_PX=2000
+        H, W = 200, 300
+        img_arr = np.zeros((H, W, 4), dtype=np.uint8)
+
+        # Núcleo izquierdo: columnas 10:70, filas 70:130
+        img_arr[70:130, 10:70, :3] = core_color
+        img_arr[70:130, 10:70, 3] = 255
+        # Puente: columnas 70:230, filas 90:110
+        img_arr[90:110, 70:230, :3] = bridge_color
+        img_arr[90:110, 70:230, 3] = 255
+        # Núcleo derecho: columnas 230:290, filas 70:130
+        img_arr[70:130, 230:290, :3] = core_color
+        img_arr[70:130, 230:290, 3] = 255
+
+        img = Image.fromarray(img_arr, mode="RGBA")
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        img = Image.open(io.BytesIO(buf.getvalue()))
+
+        local_bounds = {
+            "north": 21.5, "south": 19.5,
+            "east": -102.0, "west": -104.5,
+        }
+        cells = detect_cells(img, local_bounds, min_px=config.CELL_MIN_PX)
+
+        assert len(cells) >= 2, (
+            f"Blob de dos núcleos debe partirse en ≥2 celdas; "
+            f"obtenido {len(cells)} con CELL_MAX_PX={config.CELL_MAX_PX}"
+        )
+        for c in cells:
+            assert c["area_px"] >= config.CELL_MIN_PX
+            for pt in c["ring"]:
+                assert len(pt) == 2
+
+    def test_small_blob_not_split(self):
+        """Componente con área ≤ CELL_MAX_PX no pasa por la lógica de split."""
+        from app.processing.pixel_extract import _get_colormap
+
+        cmap = _get_colormap()
+        core_color = next(
+            (rgb for rgb, dbz in sorted(cmap.items(), key=lambda x: x[1])
+             if dbz >= config.CELL_SPLIT_DBZ),
+            None,
+        )
+        if core_color is None:
+            pytest.skip("Colormap sin color de núcleo convectivo")
+
+        # Blob pequeño: 20×20 = 400 px << CELL_MAX_PX=2000
+        H, W = 100, 100
+        img_arr = np.zeros((H, W, 4), dtype=np.uint8)
+        img_arr[40:60, 40:60, :3] = core_color
+        img_arr[40:60, 40:60, 3] = 255
+
+        img = Image.fromarray(img_arr, mode="RGBA")
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        img = Image.open(io.BytesIO(buf.getvalue()))
+
+        local_bounds = {
+            "north": 21.5, "south": 19.5,
+            "east": -102.0, "west": -104.0,
+        }
+        cells = detect_cells(img, local_bounds, min_px=config.CELL_MIN_PX)
+        # Blob pequeño → exactamente 1 celda (sin split)
+        assert len(cells) == 1, f"Blob pequeño no debe partirse; obtenido {len(cells)}"
