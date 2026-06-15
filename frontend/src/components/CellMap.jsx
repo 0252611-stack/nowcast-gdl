@@ -256,6 +256,23 @@ function computeMeshCells(ring, vectors) {
 }
 
 /**
+ * Retorna el span de latitud de un ring. Rings que abarcan > 0.3° (~33 km)
+ * son sistemas de tormenta completos detectados como un blob único — su fill
+ * inunda el mapa y oculta la información útil, así que se omite el polígono
+ * y solo se dibuja la flecha de centroide + trayectoria.
+ */
+function ringLatSpan(ring) {
+  if (!ring?.length) return 0
+  let min = ring[0][0], max = ring[0][0]
+  for (const pt of ring) {
+    if (pt[0] < min) min = pt[0]
+    if (pt[0] > max) max = pt[0]
+  }
+  return max - min
+}
+const RING_MAX_SPAN_DEG = 0.3
+
+/**
  * Escala secuencial de calidad 0→1: rojo (baja) → ámbar → verde (alta).
  * Accesible: además del color se muestra el número en el tooltip.
  */
@@ -550,7 +567,7 @@ export default function CellMap({
       {/* Detecciones crudas (pre-tracking) — debug: contorno violeta discontinuo, relleno visible */}
       {showRawDetections && !compact && rawDetections.map((det, i) => (
         <Fragment key={`det-${i}`}>
-          {det.ring.length >= 3 && (
+          {det.ring.length >= 3 && ringLatSpan(det.ring) <= RING_MAX_SPAN_DEG && (
             <Polygon
               positions={det.ring}
               pathOptions={{
@@ -575,20 +592,24 @@ export default function CellMap({
       {showCells && !compact && trackedCells.map(cell => {
         const q = typeof cell.quality === "number" ? cell.quality : 0
         const ringColor = qualityColor(q)
+        const hugeBlob = ringLatSpan(cell.ring) > RING_MAX_SPAN_DEG
         return (
           <Fragment key={`tc-${cell.id}`}>
-            {/* Polígono del anillo coloreado por quality */}
-            <Polygon
-              positions={cell.ring}
-              pathOptions={{
-                color:       ringColor,
-                weight:      3,
-                opacity:     0.95,
-                fill:        true,
-                fillColor:   ringColor,
-                fillOpacity: 0.35,
-              }}
-            />
+            {/* Polígono omitido para blobs gigantes (sistema de tormenta completo):
+                solo se dibuja la flecha y la trayectoria */}
+            {!hugeBlob && (
+              <Polygon
+                positions={cell.ring}
+                pathOptions={{
+                  color:       ringColor,
+                  weight:      3,
+                  opacity:     0.95,
+                  fill:        true,
+                  fillColor:   ringColor,
+                  fillOpacity: 0.35,
+                }}
+              />
+            )}
 
             {/* Trayectoria histórica de centroides */}
             {cell.track.length >= 2 && (
