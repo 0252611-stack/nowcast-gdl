@@ -1044,3 +1044,75 @@ nunca aparecen en producción.
 - Railway canvas: `nowcast-gdl` Online + `nowcast-gdl-volume` visibles ✅
 
 **Tests:** 183/183 ✅ (sin regresiones)
+
+---
+
+## Sesión 9 — 15 jun 2026 — Visibilidad de capas Celdas / Debug celdas en /malla
+
+### Problema reportado
+Los toggles "Celdas" y "Debug celdas" en `/malla` no mostraban diferencia
+visible al activarse/desactivarse.
+
+### Diagnóstico (vía inspección de DOM y API en Chrome)
+
+**Causa 1 — Opacidades demasiado bajas:**
+- `rawDetections` (Debug celdas): `fillOpacity: 0.05`, `weight: 1` — prácticamente invisible.
+- `trackedCells` (Celdas): `fillOpacity: 0.10`, `weight: 2` — indetectable sobre contornos de eco.
+
+**Causa 2 — Blob gigante de Celda #1:**
+La Celda #1 tenía un ring de 770 puntos abarcando lat 22.03 → 20.7 (todo el
+sistema de lluvia como un componente conectado único). Su fill cubría TODO el
+mapa con un tinte de fondo, haciendo imposible ver las celdas individuales.
+Verificado vía `window.__radarData.tracked_cells[0]` en consola JS.
+
+### Fixes aplicados (3 commits)
+
+**commit `dcdbfb2` — `fix(ui): make Celdas and Debug-celdas layers visually distinct`**
+- `CellMap.jsx`: `fillOpacity` de raw detections `0.05→0.25`, `weight: 1→2`,
+  color cambiado a violeta `#7C3AED` (contrasta con contornos de eco).
+- `CellMap.jsx`: `fillOpacity` de tracked cells `0.10→0.35`, `weight: 2→3`.
+- `FieldGridView.jsx`: badges de conteo en los botones ("Celdas 18", "Debug celdas 14").
+- `FieldGridView.jsx`: mensaje de empty-state cuando toggle activo pero sin datos.
+
+**commit `fcb1935` — `fix(ui): skip polygon fill for storm-system-sized blobs`**
+- Nueva función `ringLatSpan(ring)` en `CellMap.jsx`: calcula el span de
+  latitud del ring.
+- Constante `RING_MAX_SPAN_DEG = 0.3` (~33 km): threshold para considerar
+  un blob "gigante".
+- Celdas con ring span > 0.3° **no renderizan el Polygon de relleno** (la flecha
+  de centroide y la trayectoria histórica sí se muestran). Esto elimina el
+  tinte de fondo y deja visible la información real.
+- Mismo filtro aplicado a `rawDetections` (Debug celdas).
+
+### Qué se ve ahora al activar cada capa
+
+**"Celdas"** — celdas rastreadas post-TITAN:
+- Polígonos con borde coloreado por calidad en el área de lluvia activa:
+  verde `#16A34A` (calidad ≥70%), ámbar `#D97706` (40–69%), rojo `#DC2626` (<40%).
+- Flecha de centroide apuntando en la dirección de movimiento; tooltip con
+  id, calidad, dBZ, km/h, bearing, edad, área_px.
+- Línea punteada de trayectoria histórica de centroides.
+- Celdas "blob gigante" solo muestran la flecha (sin fill que inunde el mapa).
+
+**"Debug celdas"** — detecciones crudas pre-tracking (violeta):
+- Polígonos violeta `#7C3AED` con borde discontinuo — cada blob que `detect_cells`
+  encontró antes de que el tracker los asocie a IDs persistentes.
+- Tooltip: dBZ promedio/máximo, área_px, solidity, extent.
+- Sirve para calibrar `CELL_MIN_PX` y el threshold dBZ: si hay muchos blobs
+  pequeños ruidosos → subir umbral; si las celdas se parten en muchos fragmentos
+  → bajar threshold o ajustar morfología.
+
+**Badge de conteo:** el número junto al botón ("Celdas 18") indica cuántas
+celdas hay ahora mismo; si marca "0" hay cielo despejado, no un bug.
+
+### Hallazgo de tracking a corregir (pendiente, backend)
+La Celda #1 siempre tiene un ring de ~700+ puntos que abarca todo el AMG
+porque el algoritmo TITAN detecta todo el sistema de lluvia conectado como
+una sola celda. Falta ajustar `CELL_MIN_PX` o implementar un split de
+componentes conectados grandes para que el tracker produzca celdas
+individuales de tamaño razonable (~0.1–0.2° span).
+
+### Estado final
+- `npm run lint` 0 warnings ✅ | `npm run build` ✅
+- Verificado en https://nowcast-gdl.vercel.app/malla con lluvia activa.
+- 2 commits pusheados a `origin/master`.
