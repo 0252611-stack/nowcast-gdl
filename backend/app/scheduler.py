@@ -205,6 +205,9 @@ async def run_radar_loop(conn: sqlite3.Connection, state: RadarState) -> None:
 
             # Emitir una predicción por punto y registrarla para verificación posterior
             _point_diag: list[dict] = []
+            # Lookup diagnóstico: aceleración de la celda que originó cada ETA cell_tracking.
+            # No pasa por NowcastResult/schemas.py — es puramente para el JSONL.
+            _cell_by_id = {c.id: c for c in state.tracked_cells}
             frames = get_recent_frames(conn, 2)
             async with httpx.AsyncClient(
                 headers={"User-Agent": config.USER_AGENT}, timeout=10
@@ -258,6 +261,12 @@ async def run_radar_loop(conn: sqlite3.Connection, state: RadarState) -> None:
                             "trend": round(result.intensity_trend, 3) if result.intensity_trend is not None else None,
                             "w_radar": round(result.weight_radar, 3) if result.weight_radar is not None else None,
                             "model_agr": round(result.model_agreement, 3) if result.model_agreement is not None else None,
+                            "cell_age_min": round(result.cell_age_minutes, 1) if result.cell_age_minutes is not None else None,
+                            "cell_accel": (
+                                round(_cell_by_id[result.cell_id].accel_kmh_per_min, 2)
+                                if result.cell_id is not None and result.cell_id in _cell_by_id
+                                else None
+                            ),
                         })
 
                         # Log de variabilidad: mostrar delta respecto al ciclo anterior
@@ -363,6 +372,12 @@ async def run_radar_loop(conn: sqlite3.Connection, state: RadarState) -> None:
                     **_flow_stats,
                     # --- Motor: predicción por punto ---
                     "points": _point_diag,
+                    # --- Verificación de este ciclo (crudo, re-agregable por ventana) ---
+                    "verif_n": v["count"],
+                    "verif_hit": v["hit"],
+                    "verif_fa": v["false_alarm"],
+                    "verif_miss": v["miss"],
+                    "verif_cn": v["correct_negative"],
                     # --- Skill verificado acumulado ---
                     "skill_n": _sm.get("overall", {}).get("total", 0),
                     "skill_pod": round(_sk_o["pod"], 3) if _sk_o.get("pod") is not None else None,
