@@ -30,7 +30,28 @@ Antes de trabajar en cualquier módulo, leer:
   `compute_cell_etas` + `_project_cell_to_point`
 - `storage.py` — tablas: `radar_frames`, `point_readings`, `nowcast_predictions`,
   `monitored_points`, `tracking_state` (fila única, upsert)
-- `scheduler.py` — desempaca 3-tupla de `update_tracks`; guarda `tracking_state` por ciclo
+- `scheduler.py` — desempaca 3-tupla de `update_tracks`; guarda `tracking_state` por ciclo;
+  escribe una línea JSONL por ciclo en `DIAG_LOG_PATH` con detección/tracking,
+  vectores de flujo óptico (sobre máscara de eco real, no todo el frame) y
+  motor/skill por punto — ver `GET /diag/log` para leerlo en producción
+
+## Observabilidad
+
+- Logger `"app"` configurado explícitamente en el lifespan de `main.py` (uvicorn
+  no añade handler al root logger; sin esto los `log.info` del scheduler quedan
+  silenciados en Railway)
+- `GET /diag/log?tail=N` — descarga el JSONL de diagnóstico por ciclo (sin auth,
+  read-only). Usar para evaluar el motor y los vectores sin acceso al volumen:
+  `curl -s "https://nowcast-gdl-production.up.railway.app/diag/log" -o prod_diag.jsonl`
+- Campos por punto en `points[]`: `method`, `eta_min`, `conf`, `led_km`,
+  `cell_spd`, `cell_brg`, `trend`, `w_radar`, `model_agr`, `cell_age_min`,
+  `cell_accel` (aceleración de la celda — diagnóstico puro, no pasa por
+  `NowcastResult`). Verificación por ciclo: `verif_n/hit/fa/miss/cn`
+  (re-agregable por ventana, además del `skill_*` acumulado global).
+- **Bug conocido, sin corregir (decisión explícita del usuario):** `cell_spd`
+  en `tracking.py` no tiene tope físico — saltos de tracking por merge/split
+  producen velocidades de celda de cientos de km/h, correlacionado con el FAR
+  alto del motor. Antes de tocarlo, analizar ≥24h de `prod_diag.jsonl`.
 
 ## Constantes críticas (no hardcodear en otros módulos)
 

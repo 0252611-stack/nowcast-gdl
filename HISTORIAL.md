@@ -1431,3 +1431,157 @@ Subir la calidad del motor de celdas/malla en cinco frentes:
 **Tests:** 202/202 ✅ | **Lint:** 0 warnings ✅ | **Build:** ✅
 
 **Push pendiente** — con consentimiento explícito del usuario.
+
+---
+
+## Sesión 12 — 27 jun a 1 jul 2026 — Observabilidad del motor: JSONL rico + lectura remota desde producción
+
+### Objetivo
+
+El usuario pidió revisar los logs para evaluar el desempeño del motor y de los
+vectores (flechas) de optical flow. El JSONL de diagnóstico existente (sesión 7)
+solo cubría detección/tracking; faltaba visibilidad del motor de predicción por
+punto, de la calidad de los vectores, y del skill acumulado. Además el `root`
+logger quedaba en WARNING bajo uvicorn, silenciando todos los `log.info` del
+scheduler.
+
+---
+
+### Fix de logging: `log.info` silenciados bajo uvicorn ✅
+
+**Causa raíz:** uvicorn configura sus propios loggers pero no añade handler al
+`root`; sin handler, Python usa `lastResort` (WARNING+) y los `log.info` del
+scheduler nunca llegaban a consola/Railway.
+
+**Fix (`main.py`, lifespan):** en vez de solo `logging.root.setLevel(...)`, se
+configura el logger `"app"` explícitamente con su propio `StreamHandler` +
+formatter, y `propagate = False`. Ahora los `log.info` de ciclo/ETA/skill son
+visibles en local y en los logs de Railway.
+
+---
+
+### JSONL de diagnóstico ampliado (`scheduler.py`) ✅
+
+Al bloque existente (`n_det`, áreas, dBZ, `track_diag`) se añadieron tres grupos
+de campos, todos por ciclo (~90 s):
+
+- **Vectores (optical flow):** `flow_spd_kmh`, `flow_brg_deg`, `flow_coherence`,
+  `flow_n_echo_px` — calculados sobre `state.motion_field_ema` **enmascarado por
+  eco real** (`detection_mask` de `tracking.py`, dbz≥`DBZ_THRESHOLD`), no sobre
+  todos los píxeles del frame. La primera versión promediaba incluyendo cielo
+  despejado y daba velocidades falsamente bajas (~0.8 km/h); tras el fix, valores
+  realistas (~2–6 km/h observados, coherencia 0.4–0.7).
+- **Motor por punto:** `points[]` — por cada punto monitoreado: `method`,
+  `eta_min`, `conf`, `led_km` (leading edge distance), `cell_spd`, `cell_brg`,
+  `trend`, `w_radar`, `model_agr`.
+- **Skill acumulado:** `skill_n`, `skill_pod`, `skill_far`, `skill_csi`,
+  `skill_acc` — snapshot de `get_skill_metrics` en cada línea, sin esperar al
+  log horario.
+
+---
+
+### Análisis de ~8h de datos locales (00:12–07:54 UTC, 269 ciclos, 1032 predicciones)
+
+Reveló un problema de causa raíz en el tracker:
+
+| Señal | Valor | Diagnóstico |
+|---|---|---|
+| `cell_spd` (mediana / p90 / máx) | 160 / 347 / 662 km/h | ❌ Físicamente imposible (real: 10–60 km/h) |
+| `cell_spd` > 80 km/h | 76.5% de las predicciones | ≈ igual al FAR observado (77.5%) |
+| `conf` mediana | 0.22 (79% < 0.30) | El motor "sabe" que no confía |
+| Skill al final de la ventana | POD 92% · FAR 62% · CSI 36% | FAR alto pero mejorando |
+
+**Causa raíz localizada:** `tracking.py` (bloque de matching, ~línea 600) calcula
+`raw_speed` del desplazamiento de centroide entre detecciones emparejadas **sin
+ningún tope físico**. Cuando el tracker sufre un identity-swap por split/merge
+(`n_merge` hasta 25/ciclo, `gate_rejects` hasta 1095), el salto de centroide se
+interpreta como velocidad real; un salto de ~4 km en 90 s ya da 160 km/h. El EMA
+α=0.5 solo amortigua a la mitad, así que el error persiste varios ciclos.
+
+**Decisión del usuario:** no tocar el motor todavía. Solo arreglar la
+instrumentación y acumular datos limpios antes de diseñar el fix (candidatos
+identificados para una sesión futura: tope de velocidad en el tracker, y/o
+gating de `cell_tracking` por distancia/confianza en `engine.py`).
+
+---
+
+### Endpoint `GET /diag/log` — lectura remota desde producción ✅
+
+**Problema operativo:** correr el backend localmente para acumular 24h no es
+viable (la sesión se cierra o la PC se suspende y el proceso muere — el primer
+intento local solo corrió ~8h). Railway corre 24/7 y ya escribe el JSONL en el
+volumen persistente `/data`, pero no había forma de leerlo remotamente.
+
+**`main.py`:** nuevo `GET /diag/log?tail=N` (read-only, sin auth, mismo criterio
+que `/radar/cells` y `/metrics`) — devuelve el JSONL completo como `text/plain`,
+o solo las últimas N líneas con `?tail=N`. 404 si el archivo aún no existe.
+
+**Deploy:** commit `92fbb2d` pusheado a `master` → Railway redeployado. Verificado
+en producción: tras el warmup del contenedor (1 ciclo con `bounds=None`), el
+motor retoma `cell_tracking` con `points[]` y `flow_spd_kmh` poblados
+correctamente sobre datos reales de producción.
+
+**Backend local apagado** — producción es ahora la única fuente de este log.
+
+---
+
+### Estado final
+
+**Tests:** 202/202 ✅ (sin cambios en el contrato Pydantic ni en `api.js`)
+
+**Cómo descargar el log para análisis:**
+```bash
+curl -s "https://nowcast-gdl-production.up.railway.app/diag/log" -o prod_diag.jsonl
+# o solo las últimas N líneas:
+curl -s "https://nowcast-gdl-production.up.railway.app/diag/log?tail=200"
+```
+
+**Pendiente (próxima sesión):** con ≥24h de datos limpios de producción,
+analizar y diseñar los fixes del motor:
+1. Tope de velocidad física en `tracking.py` (causa raíz del FAR alto).
+2. Gating de `cell_tracking` por `led_km`/`conf` en `engine.py`.
+
+---
+
+### Ampliación del JSONL: edad/aceleración de celda + verificación por ciclo ✅
+
+Revisando el log en vivo (`?tail=3`) se confirmó que el motor sigue emitiendo
+`cell_spd` inverosímiles en producción (135.2 → 163.0 km/h en ciclos
+consecutivos, mismo `cell_id`). El usuario pidió instrumentar señales
+adicionales para poder confirmar la hipótesis de identity-swap sin tocar el
+motor todavía.
+
+**`scheduler.py` — 3 campos nuevos, sin tocar `schemas.py`/`api.js`:**
+- `points[].cell_age_min` — ya existía como `NowcastResult.cell_age_minutes`
+  (calculado en `engine.py` desde sesión 6), solo faltaba incluirlo en el
+  diagnóstico por punto.
+- `points[].cell_accel` — `accel_kmh_per_min` de `TrackedCell` (existe en
+  `tracking.py` desde sesión 5/6 pero nunca se exponía). Se resuelve con un
+  lookup diagnóstico `_cell_by_id = {c.id: c for c in state.tracked_cells}`
+  por `result.cell_id`, sin pasar por el contrato `NowcastResult`.
+- `verif_n/verif_hit/verif_fa/verif_miss/verif_cn` — conteos crudos de
+  `verify_predictions` por ciclo (antes solo se logueaban vía `log.info` si
+  `count>0`; ahora también van al JSONL siempre, incluso en 0). Permite
+  reconstruir el skill de cualquier ventana de tiempo en vez de depender solo
+  del acumulado global (`skill_pod`/`skill_far`/etc.).
+
+**Deploy:** commit `cfeeeeb` pusheado a `master` → Railway redeployado.
+Verificado en producción — primer ciclo con datos completos:
+```
+cell_age_min=14.0  cell_accel=-19.13   cell_spd=135.2  (20:14 UTC)
+cell_age_min=17.0  cell_accel=-233.73  cell_spd=163.0  (20:15 UTC)
+verif: {n:4, hit:1, fa:3, miss:0, cn:0}
+```
+Hallazgo inmediato: la celda causante **no es joven** (14–17 min de edad, no
+recién creada), lo que matiza la hipótesis simple de "celda nueva = swap". Pero
+el salto de aceleración (`-233.73 km/h/min` entre ciclos consecutivos de la
+misma celda persistente) sigue siendo evidencia directa de un salto de
+velocidad instantáneo — consistente con que un merge/split reasigna el
+centroide de una celda ya existente a otro blob, no con que sea una celda
+recién creada. A investigar con más datos.
+
+**Tests:** 202/202 ✅ | **Fuera de alcance (diferido):** desglose de skill
+*por método* (`cell_tracking` vs `advection`) — requeriría persistir el método
+en `nowcast_predictions` y modificar `verify_predictions`/`get_skill_metrics`
+en la capa de storage; los `verif_*` agregados de este cambio ya permiten un
+análisis por ventana de tiempo sin ese trabajo adicional.
