@@ -19,8 +19,8 @@ from app import config
 import numpy as np
 
 from app.nowcast.engine import estimate_arrival
-from app.processing.motion import multi_frame_motion_field
-from app.processing.tracking import TrackedCell, detect_cells, update_tracks
+from app.processing.motion import field_to_global_vector, multi_frame_motion_field
+from app.processing.tracking import TrackedCell, detect_cells, detection_mask, update_tracks
 from app.processing.pixel_extract import reading_for_point
 from app.schemas import WindSample
 from app.sources.openmeteo import (
@@ -130,6 +130,7 @@ async def run_radar_loop(conn: sqlite3.Connection, state: RadarState) -> None:
             # Calcular el campo de movimiento multi-frame UNA VEZ por ciclo (no por punto).
             # Mantener EMA temporal para suavizar ciclo a ciclo.
             frames_for_motion = get_recent_frames(conn, 4)
+            _flow_stats: dict = {}
             if state.last_bounds and len(frames_for_motion) >= 2:
                 new_field = multi_frame_motion_field(frames_for_motion, state.last_bounds)
                 if new_field is not None:
@@ -138,6 +139,33 @@ async def run_radar_loop(conn: sqlite3.Connection, state: RadarState) -> None:
                         state.motion_field_ema = (0.5 * new_field + 0.5 * prev).astype(np.float32)
                     else:
                         state.motion_field_ema = new_field
+
+            # Estadísticas del campo de flujo óptico — para evaluar los vectores (flechas).
+            # Se usa solo la máscara de eco (dbz >= DBZ_THRESHOLD) del frame actual para
+            # no diluir el vector con píxeles de cielo despejado (la mayoría del área).
+            if state.motion_field_ema is not None and state.last_bounds:
+                _raw_mask = detection_mask(image, bounds)   # uint8 H×W (0 o 255)
+                _echo_mask = _raw_mask > 0                  # bool H×W
+                _n_echo_px = int(_echo_mask.sum())
+                if _n_echo_px > 0:
+                    _gv = field_to_global_vector(
+                        state.motion_field_ema, _echo_mask, state.last_bounds
+                    )
+                    # Coherencia sobre píxeles de eco: resultante / magnitud_media.
+                    # Alta (→1) = campo uniforme; baja (→0) = flujo caótico.
+                    _f_eco = state.motion_field_ema[_echo_mask]   # N×2
+                    _mag_eco = np.sqrt(_f_eco[:, 0] ** 2 + _f_eco[:, 1] ** 2)
+                    _mean_mag = float(_mag_eco.mean())
+                    _resultant = float(np.sqrt(
+                        float(_f_eco[:, 0].mean()) ** 2 + float(_f_eco[:, 1].mean()) ** 2
+                    ))
+                    _coherence = round(_resultant / _mean_mag, 3) if _mean_mag > 1e-9 else 0.0
+                    _flow_stats = {
+                        "flow_spd_kmh": round(_gv["speed_kmh"], 1),
+                        "flow_brg_deg": round(_gv["bearing_deg"], 0),
+                        "flow_coherence": _coherence,
+                        "flow_n_echo_px": _n_echo_px,
+                    }
 
             # Capa 2: seguimiento de celdas UNA VEZ por ciclo, usando el frame más nuevo.
             dets: list[dict] = []          # detecciones crudas; inicializar para el log final
@@ -176,6 +204,7 @@ async def run_radar_loop(conn: sqlite3.Connection, state: RadarState) -> None:
                     log.warning("Error en tracking de celdas: %s", exc_tr)
 
             # Emitir una predicción por punto y registrarla para verificación posterior
+            _point_diag: list[dict] = []
             frames = get_recent_frames(conn, 2)
             async with httpx.AsyncClient(
                 headers={"User-Agent": config.USER_AGENT}, timeout=10
@@ -218,6 +247,18 @@ async def run_radar_loop(conn: sqlite3.Connection, state: RadarState) -> None:
                             except Exception as exc:
                                 log.debug("Trajectory wind no disponible: %s", exc)
                         save_prediction(conn, result)
+                        _point_diag.append({
+                            "id": pt["id"],
+                            "method": result.method,
+                            "eta_min": result.eta_minutes,
+                            "conf": round(result.confidence, 3) if result.confidence is not None else None,
+                            "led_km": round(result.leading_edge_distance_km, 1) if result.leading_edge_distance_km is not None else None,
+                            "cell_spd": round(result.cell_speed_kmh, 1) if result.cell_speed_kmh is not None else None,
+                            "cell_brg": round(result.cell_bearing_deg, 0) if result.cell_bearing_deg is not None else None,
+                            "trend": round(result.intensity_trend, 3) if result.intensity_trend is not None else None,
+                            "w_radar": round(result.weight_radar, 3) if result.weight_radar is not None else None,
+                            "model_agr": round(result.model_agreement, 3) if result.model_agreement is not None else None,
+                        })
 
                         # Log de variabilidad: mostrar delta respecto al ciclo anterior
                         pid = pt["id"]
@@ -304,9 +345,13 @@ async def run_radar_loop(conn: sqlite3.Connection, state: RadarState) -> None:
             try:
                 _diag_path = Path(config.DIAG_LOG_PATH)
                 _diag_path.parent.mkdir(parents=True, exist_ok=True)
+                # Skill actual (lectura ligera de DB, sin bloquear el ciclo)
+                _sm = get_skill_metrics(conn)
+                _sk_o = _sm.get("overall", {}) if _sm.get("verified", 0) > 0 else {}
                 _record = {
                     "frame_time": scan_time.isoformat(),
                     "cycle_s": _cycle_s,
+                    # --- Detección y tracking ---
                     "n_det": len(dets),
                     "area_min": min(_areas) if _areas else None,
                     "area_med": int(np.median(_areas)) if _areas else None,
@@ -314,6 +359,16 @@ async def run_radar_loop(conn: sqlite3.Connection, state: RadarState) -> None:
                     "dbz_min": round(min(_dbzs), 1) if _dbzs else None,
                     "dbz_max": round(max(_dbzs), 1) if _dbzs else None,
                     **track_diag,
+                    # --- Vectores (optical flow) ---
+                    **_flow_stats,
+                    # --- Motor: predicción por punto ---
+                    "points": _point_diag,
+                    # --- Skill verificado acumulado ---
+                    "skill_n": _sm.get("overall", {}).get("total", 0),
+                    "skill_pod": round(_sk_o["pod"], 3) if _sk_o.get("pod") is not None else None,
+                    "skill_far": round(_sk_o["far"], 3) if _sk_o.get("far") is not None else None,
+                    "skill_csi": round(_sk_o["csi"], 3) if _sk_o.get("csi") is not None else None,
+                    "skill_acc": round(_sk_o["accuracy"], 3) if _sk_o.get("accuracy") is not None else None,
                 }
                 with _diag_path.open("a", encoding="utf-8") as _f:
                     _f.write(json.dumps(_record) + "\n")

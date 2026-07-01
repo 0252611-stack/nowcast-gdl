@@ -96,11 +96,17 @@ def _serialize_tracked_cells(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Configurar nivel de logging desde LOG_LEVEL antes de que el scheduler emita.
-    # Se ajusta el root logger para que los módulos hijos (app.*) sean visibles.
-    # uvicorn configura sus propios handlers, pero no toca el root level, por lo que
-    # sin este ajuste el root queda en WARNING y los INFO/DEBUG de tracking no aparecen.
-    logging.root.setLevel(getattr(logging, config.LOG_LEVEL.upper(), logging.INFO))
+    # uvicorn NO añade handler al root logger, solo a sus propios loggers.
+    # Sin handler en root, Python usa lastResort que descarta INFO.
+    # Solución: configurar el logger "app" con su propio StreamHandler y nivel.
+    _log_level = getattr(logging, config.LOG_LEVEL.upper(), logging.INFO)
+    _app_logger = logging.getLogger("app")
+    _app_logger.setLevel(_log_level)
+    if not _app_logger.handlers:
+        _h = logging.StreamHandler()
+        _h.setFormatter(logging.Formatter("%(asctime)s %(levelname)-8s %(name)s: %(message)s"))
+        _app_logger.addHandler(_h)
+    _app_logger.propagate = False
 
     Path(config.DB_PATH).parent.mkdir(parents=True, exist_ok=True)
     conn = init_db(config.DB_PATH)
@@ -289,6 +295,27 @@ async def get_radar_cells_mask():
     return Response(
         content=buf.getvalue(),
         media_type="image/png",
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
+@app.get("/diag/log")
+async def get_diag_log(tail: int = 0):
+    """Log JSONL de diagnóstico por ciclo (detección, tracking, flujo óptico, motor, skill).
+
+    Sin `tail` devuelve el archivo completo. `?tail=N` devuelve solo las últimas N líneas
+    (útil para muestreos rápidos sin descargar el histórico entero). Read-only, sin auth,
+    mismo criterio que /radar/cells y /metrics (no expone nada sensible).
+    """
+    diag_path = Path(config.DIAG_LOG_PATH)
+    if not diag_path.exists():
+        raise HTTPException(404, "Aún no hay registros de diagnóstico")
+    lines = diag_path.read_text(encoding="utf-8").splitlines()
+    if tail and tail > 0:
+        lines = lines[-tail:]
+    return Response(
+        content="\n".join(lines) + ("\n" if lines else ""),
+        media_type="text/plain",
         headers={"Cache-Control": "no-cache"},
     )
 
