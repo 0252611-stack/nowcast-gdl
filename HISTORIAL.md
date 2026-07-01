@@ -1585,3 +1585,56 @@ recién creada. A investigar con más datos.
 en `nowcast_predictions` y modificar `verify_predictions`/`get_skill_metrics`
 en la capa de storage; los `verif_*` agregados de este cambio ya permiten un
 análisis por ventana de tiempo sin ese trabajo adicional.
+
+---
+
+### Fix: causa raíz de `cell_spd` inverosímil — gate de matching dinámico ✅
+
+Con la evidencia acumulada (histórico de 8h + campos `cell_age_min`/`cell_accel`
+nuevos), el usuario pidió diagnosticar la causa raíz exacta y corregirla.
+
+**Causa raíz confirmada en `tracking.py`:** `update_tracks()` empareja tracks
+con detecciones usando un gate de distancia **estático**
+(`CELL_MATCH_MAX_KM=15.0`), independiente del tiempo transcurrido. A la
+cadencia normal del radar (`POLL_INTERVAL_SECONDS=90`), este gate tolera
+implícitamente emparejamientos que impliquen hasta `15km/(90s/3600s)=600 km/h`
+— exactamente el rango de los valores absurdos observados en producción
+(100–170 km/h rutinarios, hasta 662 km/h en la muestra histórica). Cuando el
+tracker enlaza una celda existente con un blob distinto durante un
+merge/split, el salto pasa el gate sin problema y la velocidad resultante lo
+hereda directamente. Esto también explica por qué celdas *viejas* (485 min de
+edad) mostraban el bug: no es exclusivo de celdas recién creadas.
+
+**Fix — 2 partes en `tracking.py`, tope acordado con el usuario: 80 km/h:**
+
+1. **Gate dinámico (causa raíz):** nueva constante `CELL_MAX_SPEED_KMH=80.0`
+   en `config.py`. El gate de matching pasa de estático a
+   `max_km = min(CELL_MATCH_MAX_KM, CELL_MAX_SPEED_KMH * interval_seconds / 3600.0)`.
+   A 90s esto tensa el gate de 15km → ~2km; tras huecos largos del IAM el
+   techo espacial absoluto (15km) sigue acotando razonablemente. Misma
+   variable reutilizada para el gate de detección de split, sin cambios ahí.
+2. **Clamp defensivo de `raw_speed`:** aplicado **después** del `if/else` que
+   calcula la velocidad (cubre tanto la rama de desplazamiento real como la
+   rama `interval_seconds≤0` que hereda `t.velocity_kmh` — importante porque
+   una celda con velocidad vieja >80 km/h restaurada de `tracking_state` de
+   antes de este fix también debe quedar acotada). Protege también
+   `accel_kmh_per_min`, derivado del mismo `raw_speed`.
+3. **Observabilidad:** contador `n_speed_clamped` añadido al diag dict de
+   `update_tracks` (junto a `n_merge`/`n_split`/`gate_rejects`) — se propaga
+   solo al JSONL existente (`scheduler.py` ya hace `**track_diag`), sin
+   tocar `scheduler.py`.
+
+**Tests nuevos** (`TestSpeedClampAndDynamicGate` en `test_tracking.py`):
+1. Detección a ~10km con intervalo de 90s → rechazada por el gate (antes
+   pasaba con el gate estático de 15km).
+2. Celda con velocidad vieja de 170 km/h (rama `interval_seconds=0`) → el
+   clamp activa (`n_speed_clamped==1`) y la velocidad resultante queda por
+   debajo de la vieja sin clamp (el EMA decae hacia el tope en ciclos
+   sucesivos, no de golpe).
+3. Desplazamiento normal dentro del gate → `n_speed_clamped==0` (sin falsos
+   positivos).
+
+**Sin cambios en:** `engine.py`, `schemas.py`, `api.js`, frontend, `scheduler.py`.
+
+**Tests:** 205/205 ✅ (202 + 3 nuevos) | **Deploy:** pendiente de push a
+`master` → Railway redespliega (~2 min).

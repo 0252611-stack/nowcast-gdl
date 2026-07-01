@@ -58,7 +58,15 @@ FLOW_SMOOTH_KSIZE: int = 9
 
 # --- Tracking de celdas de eco ---
 CELL_MIN_PX: int = 30          # Área mínima (px) para considerar una celda rastreable
-CELL_MATCH_MAX_KM: float = 15.0  # Distancia máx de matching greedy entre ciclos
+CELL_MATCH_MAX_KM: float = 15.0  # Techo espacial absoluto de matching greedy (usado tal cual
+                                  # solo tras huecos largos del IAM; en cadencia normal el gate
+                                  # real es más estricto, ver CELL_MAX_SPEED_KMH)
+# Tope físico de velocidad de una celda de tormenta en el AMG/GDL. Se usa para (a) el gate
+# dinámico de matching (max_km = min(CELL_MATCH_MAX_KM, CELL_MAX_SPEED_KMH * interval_s/3600))
+# y (b) el clamp de raw_speed tras el emparejamiento — evita que un identity-swap del tracker
+# (merge/split enlazando la celda con un blob distinto) produzca velocidades de cientos de
+# km/h. 80 km/h cubre incluso líneas de tormenta severas sin recortar convección típica (10-40).
+CELL_MAX_SPEED_KMH: float = 80.0
 CELL_MAX_MISSED: int = 1       # Ciclos sin match antes de purgar una celda
 CELL_HISTORY_LEN: int = 8      # Longitud del historial de centroides por celda
 # Two-level split: componentes con area > CELL_MAX_PX se re-segmentan al umbral de núcleo.

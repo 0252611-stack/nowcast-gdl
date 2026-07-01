@@ -426,6 +426,78 @@ class TestSplitMerge:
         assert next_id >= 2
 
 
+# ── gate dinámico y clamp de velocidad (fix cell_spd inverosímil) ────────────
+
+class TestSpeedClampAndDynamicGate:
+    """CELL_MAX_SPEED_KMH=80: el gate de matching debe tensarse con intervalos
+    cortos (evita emparejar con un blob distinto a distancias físicamente
+    imposibles), y raw_speed debe quedar acotado como respaldo defensivo."""
+
+    def test_gate_rejects_far_match_at_normal_interval(self):
+        """A 90s de intervalo, una detección a ~10km debe rechazarse: implicaría
+        ~400 km/h, muy por encima de CELL_MAX_SPEED_KMH=80. Con el gate estático
+        anterior (15km fijo) esta detección habría pasado sin problema."""
+        t1 = _make_tracked_cell(1, 20.670, -103.400, velocity_kmh=0.0)
+        far_det = {
+            "lat": 20.670 + 10.0 / 111.32,  # ≈ +10 km en latitud
+            "lon": -103.400,
+            "area_px": 500, "mean_dbz": 30.0, "max_dbz": 40.0,
+            "ring": [[20.670 + 10.0 / 111.32, -103.400]],
+        }
+
+        tracks, _, diag = update_tracks(
+            [t1], [far_det], T1, BOUNDS, interval_seconds=90.0, next_id=2
+        )
+
+        assert diag["gate_rejects"] >= 1
+        # El track sobrevive como "sin match" (missed_frames=1, no purgado aún),
+        # no se le asigna la detección lejana ni hereda su posición/velocidad.
+        survivors = [t for t in tracks if t.id == 1]
+        assert len(survivors) == 1
+        assert survivors[0].missed_frames == 1
+        assert survivors[0].lat == t1.lat and survivors[0].lon == t1.lon
+
+    def test_raw_speed_clamp_dampens_stale_high_velocity(self):
+        """Rama interval_seconds<=0 (raw_speed = t.velocity_kmh): una celda con
+        velocidad vieja >80 km/h (ej. restaurada de tracking_state de antes de
+        este fix) debe activar el clamp, no propagarse intacta."""
+        t1 = _make_tracked_cell(1, 20.670, -103.400, velocity_kmh=170.0, bearing_deg=90.0)
+        same_spot_det = {
+            "lat": 20.670, "lon": -103.400,
+            "area_px": 500, "mean_dbz": 30.0, "max_dbz": 40.0,
+            "ring": [[20.670, -103.400]],
+        }
+
+        tracks, _, diag = update_tracks(
+            [t1], [same_spot_det], T1, BOUNDS, interval_seconds=0.0, next_id=2
+        )
+
+        assert diag["n_speed_clamped"] == 1
+        winner = next(t for t in tracks if t.id == 1)
+        # El EMA mezcla raw_speed clampeado (80) con la velocidad vieja (170);
+        # el resultado debe ser estrictamente menor a la velocidad vieja sin
+        # clamp (que habría dado 170 sin cambios).
+        assert winner.velocity_kmh < t1.velocity_kmh
+
+    def test_speed_clamped_counter_zero_in_normal_operation(self):
+        """Un desplazamiento razonable (dentro del gate normal) no debe activar
+        el clamp — confirma que no hay falsos positivos."""
+        t1 = _make_tracked_cell(1, 20.670, -103.400, velocity_kmh=0.0)
+        near_det = {
+            "lat": 20.670 + 0.5 / 111.32,  # ≈ +0.5 km, bien dentro del gate a 90s (~2km)
+            "lon": -103.400,
+            "area_px": 500, "mean_dbz": 30.0, "max_dbz": 40.0,
+            "ring": [[20.670 + 0.5 / 111.32, -103.400]],
+        }
+
+        _, _, diag = update_tracks(
+            [t1], [near_det], T1, BOUNDS, interval_seconds=90.0, next_id=2
+        )
+
+        assert diag["n_continued"] == 1
+        assert diag["n_speed_clamped"] == 0
+
+
 # ── quality score (Compuerta 1) ───────────────────────────────────────────────
 
 class TestQualityScore:

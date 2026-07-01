@@ -521,7 +521,12 @@ def update_tracks(
     de área); sin aleatoriedad. Devuelve (new_tracks, updated_next_id, diag)
     donde diag es un dict con métricas del ciclo de tracking para observabilidad.
     """
-    max_km = config.CELL_MATCH_MAX_KM
+    # Gate dinámico: el techo espacial estático (CELL_MATCH_MAX_KM) solo debe permitir
+    # lo que sea físicamente alcanzable a CELL_MAX_SPEED_KMH en el intervalo real. A la
+    # cadencia normal (90s) esto tensa el gate de 15km a ~2km; tras huecos largos del IAM
+    # el techo espacial absoluto sigue acotando. Sin esto, un match a 15km/90s implicaría
+    # ~600 km/h — exactamente el rango de los cell_spd inverosímiles observados en prod.
+    max_km = min(config.CELL_MATCH_MAX_KM, config.CELL_MAX_SPEED_KMH * interval_seconds / 3600.0)
     max_missed = config.CELL_MAX_MISSED
     history_len = config.CELL_HISTORY_LEN
 
@@ -589,6 +594,7 @@ def update_tracks(
     n_purged = 0
     n_merge = 0
     n_split = 0
+    n_speed_clamped = 0
 
     # Actualizar tracks con match
     for t in prev_tracks:
@@ -605,6 +611,15 @@ def update_tracks(
             else:
                 raw_speed = t.velocity_kmh
                 raw_bearing = t.bearing_deg
+
+            # Respaldo defensivo (cubre ambas ramas de arriba): el gate dinámico de más
+            # arriba ya debería prevenir velocidades imposibles, pero se clampea de todos
+            # modos por si un caso límite lo cuela (interval_seconds anómalo, o una
+            # velocidad vieja > tope restaurada de tracking_state antes de este fix).
+            # Protege también accel_kmh_per_min, que se deriva de este mismo raw_speed.
+            if raw_speed > config.CELL_MAX_SPEED_KMH:
+                raw_speed = config.CELL_MAX_SPEED_KMH
+                n_speed_clamped += 1
 
             # EMA α=0.5 en componentes (sin/cos para el ángulo → circular correcto)
             new_speed = 0.5 * raw_speed + 0.5 * t.velocity_kmh
@@ -732,5 +747,6 @@ def update_tracks(
         "n_merge": n_merge,
         "gate_rejects": gate_rejects,
         "match_cost_mean": match_cost_mean,
+        "n_speed_clamped": n_speed_clamped,
     }
     return new_tracks, next_id, diag
