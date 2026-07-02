@@ -35,12 +35,15 @@ def _result(
     method: str = "advection",
     horizon: int = 60,
     generated_at: datetime = T0,
+    confidence: float | None = "_default",  # type: ignore[assignment]
 ) -> NowcastResult:
+    if confidence == "_default":
+        confidence = 0.7 if eta_minutes is not None else None
     return NowcastResult(
         point_id=point_id,
         raining_now=raining_now,
         eta_minutes=eta_minutes,
-        confidence=0.7 if eta_minutes is not None else None,
+        confidence=confidence,
         horizon_minutes=horizon,
         method=method,
         generated_at=generated_at,
@@ -92,6 +95,34 @@ def test_save_prediction_raining_now_is_predicted(db):
     row = db.execute("SELECT raining_now, predicted_rain FROM nowcast_predictions").fetchone()
     assert row[0] == 1
     assert row[1] == 1
+
+
+def test_save_prediction_low_confidence_eta_not_predicted(db):
+    """ETA con confianza por debajo de PREDICTED_RAIN_MIN_CONFIDENCE no cuenta
+    como 'predijo lluvia' para la métrica de skill (hallazgo: ecos de madrugada
+    en disipación con conf~0.005-0.05 inflaban el FAR aunque el motor ya sabía
+    que eran poco confiables)."""
+    r = _result(eta_minutes=30, confidence=0.05)
+    save_prediction(db, r)
+    row = db.execute("SELECT predicted_rain FROM nowcast_predictions").fetchone()
+    assert row[0] == 0
+
+
+def test_save_prediction_high_confidence_eta_is_predicted(db):
+    """ETA con confianza por encima del umbral sigue contando normalmente."""
+    r = _result(eta_minutes=30, confidence=0.5)
+    save_prediction(db, r)
+    row = db.execute("SELECT predicted_rain FROM nowcast_predictions").fetchone()
+    assert row[0] == 1
+
+
+def test_save_prediction_raining_now_ignores_confidence_gate(db):
+    """raining_now=True es observación directa, no predicción futura — siempre
+    cuenta sin importar la confianza (incluso None)."""
+    r = _result(raining_now=True, eta_minutes=0, method="radar_current", confidence=None)
+    save_prediction(db, r)
+    row = db.execute("SELECT predicted_rain FROM nowcast_predictions").fetchone()
+    assert row[0] == 1
 
 
 def test_save_prediction_derives_target_time(db):

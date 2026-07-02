@@ -294,6 +294,30 @@ def test_sample_field_at_returns_float_pair():
     assert isinstance(v_lon, float)
 
 
+def test_vector_to_speed_bearing_clamps_to_max_speed():
+    """Un vector sintético que implique >80 km/h debe acotarse a CELL_MAX_SPEED_KMH.
+
+    Mismo tope que el gate de tracking.py — protege field_to_global_vector,
+    compute_cell_motion, y los overrides de campo local en cell_tracking/advection
+    (todos pasan por esta función, único punto de conversión vector→velocidad)."""
+    from app import config
+    from app.processing.motion import vector_to_speed_bearing
+
+    # Vector grande en grados/min que implicaría varios cientos de km/h.
+    speed_kmh, bearing_deg = vector_to_speed_bearing(0.5, 0.0, BOUNDS)
+    assert speed_kmh == config.CELL_MAX_SPEED_KMH
+    assert 0.0 <= bearing_deg < 360.0
+
+
+def test_vector_to_speed_bearing_normal_speed_unaffected():
+    """Un vector pequeño (velocidad realista) no debe verse afectado por el clamp."""
+    from app.processing.motion import vector_to_speed_bearing
+
+    # ~0.003 grados/min de lat ≈ 20 km/h — muy por debajo del tope.
+    speed_kmh, _ = vector_to_speed_bearing(0.003, 0.0, BOUNDS)
+    assert 0.0 < speed_kmh < 30.0
+
+
 # ---------------------------------------------------------------------------
 # engine con motion_field precomputado (Sesión 4, mejora A/B/E)
 # ---------------------------------------------------------------------------

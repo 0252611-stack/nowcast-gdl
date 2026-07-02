@@ -1636,5 +1636,74 @@ edad) mostraban el bug: no es exclusivo de celdas recién creadas.
 
 **Sin cambios en:** `engine.py`, `schemas.py`, `api.js`, frontend, `scheduler.py`.
 
-**Tests:** 205/205 ✅ (202 + 3 nuevos) | **Deploy:** pendiente de push a
-`master` → Railway redespliega (~2 min).
+**Tests:** 205/205 ✅ (202 + 3 nuevos) | **Deploy:** ✅ commit `befd555`
+pusheado a `master`, Railway redeployado y verificado en producción.
+
+**Verificación en producción (22.5h de datos, `/diag/log` completo):**
+
+| | PRE-fix (3h) | POST-fix (22.5h) |
+|---|---|---|
+| `cell_spd` mediana | 174.9 km/h | **21.6 km/h** |
+| `cell_spd` >80 km/h | 84.6% | **0.3%** |
+| `conf` mediana | 0.030 | **0.267** |
+
+El fix se sostiene establemente hora tras hora, sin degradarse con el tiempo.
+`n_speed_clamped` actuó en 11% de los ciclos — el gate ya previene la mayoría
+en origen, el clamp es respaldo real.
+
+---
+
+### Análisis de 22.5h + 2 mejoras derivadas ✅
+
+Con el fix del tracker verificado, se pidió analizar el log completo y
+diagnosticar/planear las siguientes mejoras. Dos hallazgos:
+
+**Hallazgo A — el gate solo protegía `cell_tracking`, no `advection`:**
+de los `cell_spd` aún >80 km/h post-fix, 4 venían de `method="advection"`
+(hasta 381.5 km/h) — un camino separado (`vector_to_speed_bearing` en
+`motion.py`) sin ningún tope, usado también por el *override* de velocidad
+local dentro de `cell_tracking` (`_project_cell_to_point`).
+
+**Hallazgo B — patrón diurno de FAR, más determinante que `cell_spd`:**
+agregando `verif_hit`/`verif_fa` por hora local (GDL=UTC-6): FAR=0% entre
+17:00–21:00 (temporada de lluvia típica) vs. FAR=75–100% entre 03:00–11:00
+(madrugada/mediodía). Causa: `storage.py::save_prediction` contaba
+*cualquier* `eta_minutes` como "predijo lluvia" para POD/FAR/CSI sin mirar
+`confidence` — y el motor ya calculaba confianzas de 0.005–0.05 en ecos de
+madrugada en disipación (vs 0.5+ en tarde/noche), pero esa señal se ignoraba
+en la métrica.
+
+**Fix A (`motion.py`):** clamp de `speed_kmh` dentro de
+`vector_to_speed_bearing()` (reutiliza `CELL_MAX_SPEED_KMH=80.0`, sin
+constante nueva) — único punto de conversión vector→velocidad, protege de
+una vez `field_to_global_vector`, `compute_cell_motion`, y los 2 *overrides*
+de campo local (`cell_tracking` y `advection`) sin tocar `engine.py`.
+
+**Fix B (`config.py` + `storage.py`):** nueva constante
+`PREDICTED_RAIN_MIN_CONFIDENCE=0.30`. `predicted_rain` en `save_prediction`
+ahora exige `confidence >= 0.30` para la rama de ETA futura;
+`raining_now=True` (observación directa) sigue contando siempre, sin gating.
+Solo corrige la métrica de skill — `NowcastResult`/`api.js`/frontend sin
+cambios, el usuario sigue viendo `eta_minutes`+`confidence` igual que antes.
+
+**Observabilidad (`scheduler.py`):** nuevo campo `low_conf_suppressed` en
+`_point_diag` (mismo patrón que `n_speed_clamped`) — permite verificar
+cuántas predicciones de madrugada quedan excluidas de la métrica.
+
+**Tests nuevos:**
+- `test_nowcast.py`: `test_vector_to_speed_bearing_clamps_to_max_speed`,
+  `test_vector_to_speed_bearing_normal_speed_unaffected`.
+- `test_metrics.py`: `_result` helper extendido con param `confidence`
+  explícito; `test_save_prediction_low_confidence_eta_not_predicted`,
+  `test_save_prediction_high_confidence_eta_is_predicted`,
+  `test_save_prediction_raining_now_ignores_confidence_gate`.
+
+**Sin cambios en:** `schemas.py`, `api.js`, frontend, `engine.py`.
+
+**Tests:** 210/210 ✅ (205 + 5 nuevos)
+
+**Pendiente:** tras 24h más de datos, repetir el análisis de FAR por hora
+local para confirmar que el patrón diurno se atenúa en la métrica (la causa
+física —ecos residuales en disipación— sigue ahí; lo que cambia es que ya
+no se cuentan como "predicción fallida" cuando el motor sabía que eran de
+baja confianza).

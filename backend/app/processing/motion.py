@@ -88,10 +88,17 @@ def vector_to_speed_bearing(
     """Convierte un vector (v_lat, v_lon) en grados/min a (speed_kmh, bearing_deg).
 
     bearing_deg es el rumbo meteorológico (0=N, 90=E) hacia donde apunta el vector.
+    speed_kmh se acota a config.CELL_MAX_SPEED_KMH: este es el único punto de
+    conversión vector→velocidad usado tanto por el vector global de flujo óptico
+    (field_to_global_vector, compute_cell_motion) como por el override de campo
+    local en cell_tracking y advection (engine.py) — sin este tope, un pico de
+    ruido del optical flow puede inyectar velocidades de cientos de km/h en
+    cualquiera de esos caminos, igual que ocurría en el tracker antes de su fix.
     """
     dlon_km_per_min = v_lon * _km_per_deg_lon(bounds)
     dlat_km_per_min = v_lat * _KM_PER_DEG_LAT
     speed_kmh = math.sqrt(dlon_km_per_min**2 + dlat_km_per_min**2) * 60
+    speed_kmh = min(speed_kmh, config.CELL_MAX_SPEED_KMH)
     bearing_deg = math.degrees(math.atan2(dlon_km_per_min, dlat_km_per_min)) % 360
     return speed_kmh, bearing_deg
 

@@ -267,6 +267,10 @@ async def run_radar_loop(conn: sqlite3.Connection, state: RadarState) -> None:
                                 if result.cell_id is not None and result.cell_id in _cell_by_id
                                 else None
                             ),
+                            "low_conf_suppressed": bool(
+                                result.eta_minutes is not None and not result.raining_now
+                                and (result.confidence or 0.0) < config.PREDICTED_RAIN_MIN_CONFIDENCE
+                            ),
                         })
 
                         # Log de variabilidad: mostrar delta respecto al ciclo anterior

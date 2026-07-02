@@ -6,6 +6,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from app import config
 from app.schemas import NowcastResult, RadarCategory, RadarReading
 
 _DDL = """
@@ -171,7 +172,17 @@ def save_prediction(conn: sqlite3.Connection, result: NowcastResult) -> None:
         generated_utc + timedelta(minutes=result.eta_minutes)
         if result.eta_minutes is not None else None
     )
-    predicted_rain = bool(result.raining_now or result.eta_minutes is not None)
+    # Confianza mínima para contar como "predijo lluvia" en la métrica de skill
+    # (POD/FAR/CSI) — raining_now (observación directa) siempre cuenta; la rama
+    # de ETA futura solo cuenta si el motor la calculó con confianza suficiente.
+    # No cambia lo que se persiste en eta_minutes/confidence ni lo que ve el usuario.
+    predicted_rain = bool(
+        result.raining_now
+        or (
+            result.eta_minutes is not None
+            and (result.confidence or 0.0) >= config.PREDICTED_RAIN_MIN_CONFIDENCE
+        )
+    )
 
     conn.execute(
         """INSERT INTO nowcast_predictions

@@ -86,6 +86,15 @@ TRACKING_STATE_MAX_AGE_MIN: int = 30
 CELL_PREDICT_REGRESSION: bool = True
 CELL_PREDICT_MIN_HISTORY: int = 3
 
+# --- Verificación de skill: confianza mínima para contar como "predijo lluvia" ---
+# Hallazgo (sesión de análisis diurno): sin este umbral, CUALQUIER eta_minutes cuenta
+# para POD/FAR/CSI sin importar la confianza — ecos de madrugada en disipación con
+# conf~0.005-0.05 se marcaban como falsa alarma al no materializarse, aunque el motor
+# ya sabía que eran poco confiables (vs conf~0.5+ en tarde/noche, FAR~0%). Solo afecta
+# la métrica de skill (storage.py); NO cambia lo que se muestra al usuario (NowcastResult
+# sigue exponiendo eta_minutes/confidence tal cual, con su tooltip de incertidumbre).
+PREDICTED_RAIN_MIN_CONFIDENCE: float = 0.30
+
 # --- Logging y observabilidad ---
 LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
 # Ruta del log JSONL estructurado (una línea por ciclo, para análisis posterior).
