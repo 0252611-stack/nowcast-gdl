@@ -15,7 +15,9 @@ Antes de trabajar en cualquier módulo, leer:
 
 ## Arquitectura
 
-- `backend/` — Python 3.11, FastAPI, scheduler cada 90 s, SQLite (volumen `/data` en Railway)
+- `backend/` — Python 3.11, FastAPI, scheduler cada 90 s, SQLite (`DATA_DIR` persistente
+  en el host — Railway (trial expirado, offline) migrando a Oracle Cloud Free Tier,
+  ver `backend/deploy/README.md`)
 - `frontend/` — React + Vite + Recharts + Leaflet; rutas: `/` `/mapa` `/prediccion` `/admin`
 - **Contrato de datos: `backend/app/schemas.py`** — NUNCA cambiar sin
   actualizar `frontend/src/api.js` en el mismo commit
@@ -42,22 +44,30 @@ Antes de trabajar en cualquier módulo, leer:
   silenciados en Railway)
 - `GET /diag/log?tail=N` — descarga el JSONL de diagnóstico por ciclo (sin auth,
   read-only). Usar para evaluar el motor y los vectores sin acceso al volumen:
-  `curl -s "https://nowcast-gdl-production.up.railway.app/diag/log" -o prod_diag.jsonl`
+  `curl -s "https://<host-actual>/diag/log" -o prod_diag.jsonl`
+  (URL de producción cambia con la migración — ver `backend/deploy/README.md`)
 - Campos por punto en `points[]`: `method`, `eta_min`, `conf`, `led_km`,
   `cell_spd`, `cell_brg`, `trend`, `w_radar`, `model_agr`, `cell_age_min`,
   `cell_accel` (aceleración de la celda — diagnóstico puro, no pasa por
-  `NowcastResult`). Verificación por ciclo: `verif_n/hit/fa/miss/cn`
-  (re-agregable por ventana, además del `skill_*` acumulado global).
-- **Bug conocido, sin corregir (decisión explícita del usuario):** `cell_spd`
-  en `tracking.py` no tiene tope físico — saltos de tracking por merge/split
-  producen velocidades de celda de cientos de km/h, correlacionado con el FAR
-  alto del motor. Antes de tocarlo, analizar ≥24h de `prod_diag.jsonl`.
+  `NowcastResult`), `low_conf_suppressed` (bool — si esta predicción quedó
+  excluida de POD/FAR/CSI por confianza < `PREDICTED_RAIN_MIN_CONFIDENCE`).
+  Verificación por ciclo: `verif_n/hit/fa/miss/cn` (re-agregable por
+  ventana, además del `skill_*` acumulado global).
+- `DIAG_LOG_RETENTION_DAYS=14` — el JSONL se recorta una vez por hora
+  (`_rotate_diag_log` en `scheduler.py`); `READINGS_RETENTION_HOURS=24`
+  purga `point_readings` cada ciclo (`purge_old_readings` en `storage.py`).
+  Ninguna de las dos tablas/archivos crece sin límite.
+- **Bug de `cell_spd` sin tope físico — corregido:** gate dinámico +
+  clamp en `tracking.py` (celdas rastreadas) y en `vector_to_speed_bearing`
+  de `motion.py` (flujo óptico/advección), tope `CELL_MAX_SPEED_KMH=80.0`.
+  Verificado en producción: mediana 174.9→21.6 km/h.
 
 ## Constantes críticas (no hardcodear en otros módulos)
 
 `DBZ_THRESHOLD=18.0`, `DBZ_RAIN_THRESHOLD=18.0`, `CELL_MAX_PX=2000`,
 `CELL_SPLIT_DBZ=30.0`, `CELL_PREDICT_REGRESSION=True`,
-`TRACKING_STATE_MAX_AGE_MIN=30`, `INTENSITY_VERDICT_DBZ_DELTA=3.0`
+`TRACKING_STATE_MAX_AGE_MIN=30`, `INTENSITY_VERDICT_DBZ_DELTA=3.0`,
+`CELL_MAX_SPEED_KMH=80.0`, `PREDICTED_RAIN_MIN_CONFIDENCE=0.30`
 
 ## Datos críticos (verificados 10-jun-2026)
 
@@ -82,6 +92,8 @@ otro archivo.
 - Tests: `pytest backend/tests/ -x -q`
 - Backend dev: `uvicorn app.main:app --reload` (desde backend/)
 - Frontend dev: `npm run dev` (desde frontend/)
+- Deploy backend: Oracle Cloud VM, sin auto-deploy por git push — ver
+  `backend/deploy/README.md` (`git pull` + `systemctl restart nowcast-gdl` por SSH)
 
 ## Reglas
 

@@ -13,6 +13,7 @@ from app.storage import (
     init_db,
     load_tracking_state,
     purge_old_frames,
+    purge_old_readings,
     save_frame,
     save_reading,
     save_tracking_state,
@@ -100,6 +101,27 @@ def test_purge_old_frames(db):
     assert deleted >= 1
     frames = get_recent_frames(db, n=10)
     assert len(frames) == 1
+
+
+def test_purge_old_readings(db):
+    """point_readings no tenía purga propia — crecía sin límite. Mismo patrón
+    que purge_old_frames: solo se eliminan filas con created_at fuera de la
+    ventana de retención."""
+    db.execute(
+        """INSERT INTO point_readings
+           (point_id, dbz, category, scan_time_utc, frame_age_seconds,
+            pixel_x, pixel_y, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        ("centro", 20.0, "Ligera", "2020-01-01T00:00:00Z", 30.0, 100, 80,
+         "2020-01-01T00:00:00Z"),
+    )
+    db.commit()
+    save_reading(db, _reading())  # created_at = ahora (default de la tabla)
+
+    deleted = purge_old_readings(db, retention_hours=1)
+    assert deleted >= 1
+    remaining = db.execute("SELECT COUNT(*) FROM point_readings").fetchone()[0]
+    assert remaining == 1
 
 
 # ---------------------------------------------------------------------------

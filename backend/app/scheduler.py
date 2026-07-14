@@ -9,7 +9,7 @@ import logging
 import sqlite3
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
@@ -35,6 +35,7 @@ from app.storage import (
     list_points,
     purge_old_frames,
     purge_old_predictions,
+    purge_old_readings,
     save_frame,
     save_prediction,
     save_reading,
@@ -79,6 +80,38 @@ def _scan_time_from_kmz_url(kmz_url: str) -> datetime:
         return datetime.strptime(dt_str, "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
     except Exception:
         return datetime.now(timezone.utc)
+
+
+def _rotate_diag_log(retention_days: int) -> None:
+    """Recorta el JSONL de diagnóstico a los últimos retention_days.
+
+    Es append-only y sin esto crece sin límite (~1 línea/ciclo de 90s ≈ 960/día).
+    Se llama una vez por hora desde run_forecast_loop, no en cada ciclo de radar.
+    """
+    diag_path = Path(config.DIAG_LOG_PATH)
+    if not diag_path.exists():
+        return
+    try:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+        lines = diag_path.read_text(encoding="utf-8").splitlines()
+        kept = []
+        for line in lines:
+            try:
+                frame_time = datetime.fromisoformat(json.loads(line)["frame_time"])
+                if frame_time >= cutoff:
+                    kept.append(line)
+            except Exception:
+                continue  # línea corrupta o sin frame_time — se descarta
+        if len(kept) < len(lines):
+            diag_path.write_text(
+                "\n".join(kept) + ("\n" if kept else ""), encoding="utf-8"
+            )
+            log.info(
+                "Diag JSONL recortado: %d -> %d líneas (retention=%dd)",
+                len(lines), len(kept), retention_days,
+            )
+    except Exception as exc:
+        log.warning("Error recortando diag JSONL: %s", exc)
 
 
 async def run_radar_loop(conn: sqlite3.Connection, state: RadarState) -> None:
@@ -126,6 +159,7 @@ async def run_radar_loop(conn: sqlite3.Connection, state: RadarState) -> None:
                     log.warning("Error extrayendo punto %s: %s", pt["id"], exc)
 
             purge_old_frames(conn, config.RADAR_RETENTION_HOURS)
+            purge_old_readings(conn, config.READINGS_RETENTION_HOURS)
 
             # Calcular el campo de movimiento multi-frame UNA VEZ por ciclo (no por punto).
             # Mantener EMA temporal para suavizar ciclo a ciclo.
@@ -451,6 +485,8 @@ async def run_forecast_loop(conn: sqlite3.Connection) -> None:
                     "Skill global: sin predicciones verificadas aún (%d pendientes).",
                     m["pending"],
                 )
+
+            _rotate_diag_log(config.DIAG_LOG_RETENTION_DAYS)
         except Exception as exc:
             log.warning("Error actualizando pronóstico/skill: %s", exc)
         await asyncio.sleep(3600)

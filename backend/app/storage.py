@@ -160,6 +160,22 @@ def purge_old_frames(conn: sqlite3.Connection, retention_hours: int = 24) -> int
     return cursor.rowcount
 
 
+def purge_old_readings(conn: sqlite3.Connection, retention_hours: int = 24) -> int:
+    """Elimina lecturas de point_readings con más de retention_hours horas.
+
+    Sin purga esta tabla crece sin límite (una fila por punto por ciclo de
+    radar). retention_hours=24 da margen de sobra sobre el horizonte máximo
+    de verificación de predicciones (240 min) sin acumular indefinidamente.
+    """
+    cursor = conn.execute(
+        """DELETE FROM point_readings
+           WHERE created_at < strftime('%Y-%m-%dT%H:%M:%SZ', 'now', ? )""",
+        (f"-{retention_hours} hours",),
+    )
+    conn.commit()
+    return cursor.rowcount
+
+
 # ---------------------------------------------------------------------------
 # Predicciones y verificación de skill
 # ---------------------------------------------------------------------------

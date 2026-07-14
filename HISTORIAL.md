@@ -1707,3 +1707,69 @@ local para confirmar que el patrón diurno se atenúa en la métrica (la causa
 física —ecos residuales en disipación— sigue ahí; lo que cambia es que ya
 no se cuentan como "predicción fallida" cuando el motor sabía que eran de
 baja confianza).
+
+---
+
+## Sesión 13 — Railway trial expirado: retención de datos + migración a Oracle Cloud
+
+### Contexto
+
+El trial de Railway expiró (`Service offline — no active deployment`), sin
+aviso previo dentro de esta sesión de trabajo. El historial acumulado en el
+volumen `/data` (SQLite + JSONL) quedó inaccesible sin reactivar un plan
+pago; decisión del usuario: **no pagar, arrancar limpio** en el nuevo host.
+
+### Retención de datos (antes de migrar, para no repetir el problema) ✅
+
+Se detectó que dos fuentes crecían **sin ningún límite**:
+- `point_readings` (SQLite) — nunca tuvo función de purga, a diferencia de
+  `radar_frames`/`nowcast_predictions` que ya se purgaban por ciclo/hora.
+- `nowcast_diag.jsonl` — append-only puro desde su creación (sesión 7),
+  ~1 línea/ciclo de 90s ≈ 960/día, sin rotación.
+
+**Fix (`storage.py`, `config.py`, `scheduler.py`):**
+- `purge_old_readings(conn, retention_hours=24)` (nueva, mismo patrón que
+  `purge_old_frames`) — llamada cada ciclo de radar junto a la purga de
+  frames. Constante `READINGS_RETENTION_HOURS=24` (margen amplio sobre el
+  horizonte máximo de verificación, 240 min).
+- `_rotate_diag_log(retention_days)` (nueva en `scheduler.py`) — recorta el
+  JSONL a los últimos N días parseando `frame_time` de cada línea; se llama
+  una vez por hora desde `run_forecast_loop` (mismo lugar que el log de
+  skill), no en cada ciclo de radar. Constante `DIAG_LOG_RETENTION_DAYS=14`
+  (env var configurable).
+- Tests nuevos: `test_purge_old_readings` (`test_storage.py`),
+  `test_scheduler.py` (nuevo archivo) con 3 tests de `_rotate_diag_log`
+  (recorta lo viejo, no toca nada si todo es reciente, no falla si el
+  archivo aún no existe).
+
+**Tests:** 214/214 ✅ (210 + 4 nuevos)
+
+### Migración a Oracle Cloud Free Tier (Always Free) — artefactos listos ✅
+
+Decisión: Oracle Cloud en vez de Render/local/rearquitectura, por ser
+gratis **para siempre** (no trial) con disco persistente real y proceso
+siempre activo — el requisito no negociable del scheduler de 90s.
+
+**Nuevo `backend/deploy/`:**
+- `cloud-init.sh` — script que Oracle ejecuta solo al crear la VM (pegado en
+  "Advanced options → Cloud-init script", sin necesidad de SSH). Automatiza:
+  paquetes del sistema (incl. libs de `opencv-python-headless`), clona el
+  repo, crea venv + instala requirements, genera un `ADMIN_TOKEN` aleatorio
+  (sin input manual), arma el servicio `systemd` (reinicio automático),
+  instala **Caddy** como reverse proxy con **HTTPS automático vía
+  `sslip.io`** (usa la IP pública de la VM como hostname — evita comprar un
+  dominio), y abre el firewall del SO. Deja un resumen en
+  `/root/DEPLOY_INFO.txt` (URL + token).
+- `README.md` — guía con los únicos pasos que Oracle exige hacer a mano
+  (imposibles de automatizar desde dentro de la VM): crear cuenta, elegir
+  shape `VM.Standard.A1.Flex` (Ampere, Always Free), pegar el cloud-init,
+  y abrir los puertos 80/443 en la Security List de la VCN (nivel de red,
+  fuera del alcance del script). Incluye cómo actualizar código después
+  (no hay auto-deploy por git push como en Railway — `git pull` + restart
+  manual por SSH) y cómo apuntar `VITE_API_URL` en Vercel a la nueva URL.
+
+**Pendiente (acción del usuario, fuera de este entorno):** crear la cuenta
+Oracle, seguir los pasos del README, y actualizar `VITE_API_URL` en Vercel
+una vez la VM tenga URL. El código quedó pusheado a `master`, pero como no
+hay integración Railway activa el push no dispara ningún deploy — queda
+inerte hasta que la nueva VM exista y haga su propio `git clone`.

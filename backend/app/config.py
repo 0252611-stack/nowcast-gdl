@@ -100,6 +100,13 @@ LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
 # Ruta del log JSONL estructurado (una línea por ciclo, para análisis posterior).
 # Default: <DATA_DIR>/logs/nowcast_diag.jsonl. Configurable vía env DIAG_LOG_PATH.
 DIAG_LOG_PATH: str = os.getenv("DIAG_LOG_PATH", str(_data_dir / "logs" / "nowcast_diag.jsonl"))
+# Días de historial a conservar en el JSONL de diagnóstico. Sin esto el archivo
+# crece sin límite (append-only, sin purga). Se recorta una vez por hora
+# (run_forecast_loop), eliminando las líneas más viejas que el retention.
+DIAG_LOG_RETENTION_DAYS: int = int(os.getenv("DIAG_LOG_RETENTION_DAYS", "14"))
+# Retención de radar_frames/point_readings en SQLite (horas). point_readings
+# no tenía purga propia — sin esto crecía sin límite (una fila por punto/ciclo).
+READINGS_RETENTION_HOURS: int = 24
 
 # --- Quality score de celdas (Capa 2 — solo diagnóstico; no altera la ETA) ---
 # Pesos del promedio ponderado; deben sumar 1.0.

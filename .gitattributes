@@ -1,0 +1,5 @@
+# Scripts que se pegan/ejecutan tal cual en un intérprete Linux (cloud-init de
+# Oracle, systemd, etc.) — forzar LF pase lo que pase core.autocrlf del usuario.
+# Sin esto, un checkout en Windows con autocrlf=true convierte a CRLF y el
+# script falla al pegarse en un textarea/consola Linux (bash: $'\r': command not found).
+backend/deploy/*.sh text eol=lf
