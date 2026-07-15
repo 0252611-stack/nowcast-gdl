@@ -14,8 +14,8 @@ import httpx
 
 from app import config
 
-API_URL = "http://iam.cucei.udg.mx/radar/iam/api/api_radar.php"
-BASE_URL = "http://iam.cucei.udg.mx/radar/iam/"
+API_URL = "https://iam.cucei.udg.mx/radar/iam/api/api_radar.php"
+BASE_URL = "https://iam.cucei.udg.mx/radar/iam/"
 
 
 class RadarUnavailable(Exception):

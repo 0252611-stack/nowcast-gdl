@@ -262,7 +262,7 @@ async def test_fetch_current_frame_same_url():
 
     # The URL that will be returned by the mock API
     existing_url = (
-        "http://iam.cucei.udg.mx/radar/iam/kmz/20260610/MEXI_ZH_20260610_192501.kmz"
+        "https://iam.cucei.udg.mx/radar/iam/kmz/20260610/MEXI_ZH_20260610_192501.kmz"
     )
 
     async def mock_post(url, **kwargs):

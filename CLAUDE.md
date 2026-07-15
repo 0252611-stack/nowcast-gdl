@@ -16,8 +16,9 @@ Antes de trabajar en cualquier módulo, leer:
 ## Arquitectura
 
 - `backend/` — Python 3.11, FastAPI, scheduler cada 90 s, SQLite (`DATA_DIR` persistente
-  en el host — Railway (trial expirado, offline) migrando a Oracle Cloud Free Tier,
-  ver `backend/deploy/README.md`)
+  en el host — Google Cloud Compute Engine, `e2-micro`/`us-central1`, Always Free;
+  Railway (trial expirado) y el intento de Oracle Cloud (bloqueado por capacidad)
+  quedaron descartados, ver `backend/deploy/README-gcp.md`)
 - `frontend/` — React + Vite + Recharts + Leaflet; rutas: `/` `/mapa` `/prediccion` `/admin`
 - **Contrato de datos: `backend/app/schemas.py`** — NUNCA cambiar sin
   actualizar `frontend/src/api.js` en el mismo commit
@@ -41,11 +42,11 @@ Antes de trabajar en cualquier módulo, leer:
 
 - Logger `"app"` configurado explícitamente en el lifespan de `main.py` (uvicorn
   no añade handler al root logger; sin esto los `log.info` del scheduler quedan
-  silenciados en Railway)
+  silenciados)
 - `GET /diag/log?tail=N` — descarga el JSONL de diagnóstico por ciclo (sin auth,
   read-only). Usar para evaluar el motor y los vectores sin acceso al volumen:
-  `curl -s "https://<host-actual>/diag/log" -o prod_diag.jsonl`
-  (URL de producción cambia con la migración — ver `backend/deploy/README.md`)
+  `curl -s "https://35-255-11-50.sslip.io/diag/log" -o prod_diag.jsonl`
+  (host actual en Google Cloud e2-micro; si vuelve a migrar, ver `backend/deploy/README-gcp.md`)
 - Campos por punto en `points[]`: `method`, `eta_min`, `conf`, `led_km`,
   `cell_spd`, `cell_brg`, `trend`, `w_radar`, `model_agr`, `cell_age_min`,
   `cell_accel` (aceleración de la celda — diagnóstico puro, no pasa por
@@ -92,8 +93,8 @@ otro archivo.
 - Tests: `pytest backend/tests/ -x -q`
 - Backend dev: `uvicorn app.main:app --reload` (desde backend/)
 - Frontend dev: `npm run dev` (desde frontend/)
-- Deploy backend: Oracle Cloud VM, sin auto-deploy por git push — ver
-  `backend/deploy/README.md` (`git pull` + `systemctl restart nowcast-gdl` por SSH)
+- Deploy backend: Google Cloud VM (`e2-micro`), sin auto-deploy por git push — ver
+  `backend/deploy/README-gcp.md` (`git pull` + `systemctl restart nowcast-gdl` por SSH)
 
 ## Reglas
 

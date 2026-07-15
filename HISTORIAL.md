@@ -1773,3 +1773,92 @@ Oracle, seguir los pasos del README, y actualizar `VITE_API_URL` en Vercel
 una vez la VM tenga URL. El código quedó pusheado a `master`, pero como no
 hay integración Railway activa el push no dispara ningún deploy — queda
 inerte hasta que la nueva VM exista y haga su propio `git clone`.
+
+---
+
+## Sesión 14 — 15 jul 2026 — Oracle bloqueado por capacidad, migración a Google Cloud
+
+### Oracle Cloud: agotadas las opciones dentro del Free Trial ❌
+
+Se intentó crear la VM varias veces a lo largo de varios días. Bloqueos
+encontrados, en orden:
+- `VM.Standard.A1.Flex` (Ampere, Always Free) en Querétaro (AD-1): sin
+  capacidad, 4 intentos fallidos.
+- Suscribir una segunda región (Frankfurt/Singapore) para escapar la
+  escasez de Querétaro: bloqueado — "Free Trial accounts cannot add
+  regions" (solo 1 región permitida hasta completar el trial).
+- `VM.Standard.E2.1.Micro` (AMD, Always Free, la shape "de respaldo" más
+  pequeña): también sin capacidad en el único intento realizado.
+
+Con ambos shapes Always Free sin capacidad y sin poder cambiar de región,
+se agotaron las opciones dentro de Oracle Free Trial. Decisión del usuario:
+pivotar a **Google Cloud `e2-micro`** como Plan B.
+
+### Migración a Google Cloud — completada ✅
+
+Cuenta creada por el usuario (trial de $300 USD / 90 días, no bloquea el
+Always Free permanente). VM `nowcast-gdl` creada en `us-central1`,
+`e2-micro`, disco persistente **estándar** 30GB (el "balanceado" por
+defecto sí cobra), firewall HTTP/HTTPS habilitado.
+
+**Primer intento de creación — error de capacidad en `us-central1-c`:**
+mismo tipo de bloqueo que Oracle, pero GCE ofrece varias zonas por región;
+cambiar a `us-central1-a` y reintentar resolvió el problema de inmediato
+(a diferencia de Oracle, donde la única región disponible para la cuenta
+no tenía otra opción).
+
+**Bug real — `startup-script` moría sin avisar por el lock de dpkg:**
+la VM se creó y arrancó correctamente, pero el backend nunca respondió.
+Diagnóstico vía "Puerto en serie 1 (consola)" en el detalle de la instancia
+(GCE guarda el log de arranque completo, incluida la salida del
+`startup-script`): el primer arranque de Debian corre
+`apt-daily`/`unattended-upgrades` en background, que tenía el lock de dpkg
+tomado justo cuando el script llegó a su propio `apt-get install`. Con
+`set -euxo pipefail` el script murió ahí mismo — nunca instaló Python,
+Caddy, ni nada más — sin ningún error visible en la consola web (solo un
+timeout de conexión silencioso).
+
+**Fix:** wrapper `apt_retry()` alrededor de cada `apt-get` (reintenta hasta
+30 veces con 5s de espera en vez de morir con el primer fallo de lock).
+Se actualizó la metadata `startup-script` de la VM ya creada (sin
+recrearla) vía "Editar instancia" y se forzó un "Restablecer" (reinicio
+forzado, seguro porque el script nunca había llegado a escribir datos) para
+que se re-ejecutara completo. Segunda corrida: instaló todo correctamente
+en ~7 minutos (swap, paquetes, venv+pip, Caddy con certificado HTTPS vía
+`sslip.io`, systemd).
+
+**Verificado en producción:**
+```
+https://35-255-11-50.sslip.io/points
+→ 200 OK, devuelve los 4 puntos monitoreados
+```
+
+**Frontend actualizado:** Vercel → `VITE_API_URL` = la nueva URL →
+Redeploy manual de Production. Verificado: frontend y backend responden
+`200`.
+
+**Archivos nuevos:**
+- `backend/deploy/gcp-startup-script.sh` — equivalente GCP de
+  `cloud-init.sh`, con el fix de `apt_retry()` ya incluido.
+- `backend/deploy/README-gcp.md` — guía completa (cuenta, creación de VM,
+  el gotcha del lock de dpkg, cómo editar+reiniciar sin recrear la VM,
+  cómo apuntar Vercel).
+
+`backend/deploy/README.md` y `cloud-init.sh` (Oracle) se dejan intactos
+como referencia por si la capacidad se libera más adelante — no se
+migraron ni se borraron.
+
+### Estado actual
+
+**Stack completo:**
+- Backend Google Cloud (`e2-micro`, `us-central1-a`): `https://35-255-11-50.sslip.io`
+- Frontend Vercel: `https://nowcast-gdl.vercel.app`
+
+**Pendiente:**
+- El historial de Railway no se migró (se perdió con el trial); la app
+  arrancó con base de datos y logs vacíos en el nuevo host.
+- No hay auto-deploy por git push en GCE (igual que hubiera pasado en
+  Oracle) — actualizar código requiere SSH manual:
+  `sudo -u nowcast git -C /opt/nowcast-gdl pull && sudo systemctl restart nowcast-gdl`.
+- Calibración fina con lluvia real de temporada (pendiente de sesiones
+  anteriores, sigue vigente).

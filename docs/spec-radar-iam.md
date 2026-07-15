@@ -3,6 +3,18 @@
 > Spec 100% verificada por inspección del sitio real. El módulo radar_iam.py
 > debe seguirla exactamente — cero adivinanza.
 
+> **Actualización 15-jul-2026:** el IAM empezó a redirigir `http://` →
+> `https://` (301) en algún momento entre el 10-jun y el 15-jul — no es un
+> cambio nuestro, es un endurecimiento del lado del servidor. Con
+> `httpx.AsyncClient` sin `follow_redirects=True`, `response.raise_for_status()`
+> lanza sobre CUALQUIER 3xx (no solo 4xx/5xx), así que cada ciclo fallaba en
+> el primer request, antes de guardar cualquier lectura/predicción/diagnóstico
+> — código correcto, pero apuntando a una URL que el servidor ya no acepta
+> directamente. Fix: `API_URL`/`BASE_URL` en `radar_iam.py` ahora usan
+> `https://` directamente (evita el redirect por completo, sin depender de
+> `follow_redirects`). Las URLs de este documento se dejan como estaban
+> (referencia histórica de la spec original) pero el código usa `https://`.
+
 ---
 
 ## API del IAM (descubierta por inspección, NO documentada — tratar como frágil)
