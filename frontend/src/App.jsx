@@ -23,6 +23,11 @@ import {
 
 const REFRESH_INTERVAL_MS = 90_000
 
+// Puntos "Punto 1".."Punto 15": solo para recolectar datos (más cobertura del
+// AMG), no son relevantes para el usuario final — se excluyen del dashboard
+// de inicio pero siguen monitoreados por el scheduler y visibles en /mapa y /admin.
+const HIDDEN_ON_HOME = /^punto_\d+$/
+
 function fmtDatetime(isoStr) {
   if (!isoStr) return "—"
   return new Date(isoStr).toLocaleString("es-MX", {
@@ -45,7 +50,8 @@ export default function App() {
   const [rainviewerUrls, setRainviewerUrls] = useState({})
 
   const loadRealData = useCallback(async () => {
-    const pts = await getPoints()
+    const allPts = await getPoints()
+    const pts = allPts.filter((p) => !HIDDEN_ON_HOME.test(p.id))
     const results = await Promise.all(
       pts.map(async (pt) => {
         const [forecast, radarResp] = await Promise.all([
