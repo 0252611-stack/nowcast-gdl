@@ -1923,6 +1923,34 @@ el motor predijo para un punto en el mismo ciclo.
 **Tests:** 214/214 ✅ (sin tests nuevos — `cells` es un campo puramente
 aditivo al diagnóstico, no cambia ningún contrato/comportamiento existente).
 
+### `proj15`/`proj30` — posición proyectada explícita por celda ✅
+
+Follow-up inmediato: el usuario confirmó que faltaba la pieza de
+"deducción de movimiento" explícita — `cells[]` guardaba velocidad/rumbo
+*actual* de cada celda, pero no una posición futura predicha que se
+pudiera comparar directo contra la posición real observada después.
+
+**`tracking.py`:** nueva función pública `project_position(lat, lon,
+bearing_deg, speed_kmh, minutes, bounds) -> (lat, lon)` — proyección
+lineal a rumbo/velocidad constante (aproximación simple para diagnóstico,
+explícitamente distinta del motor de predicción real en `predict.py`,
+que usa advección semi-Lagrangiana con campo de viento).
+
+**`scheduler.py`:** cada entrada de `cells[]` ahora incluye `proj15` y
+`proj30` ([lat, lon]) — posición proyectada a 15/30 min desde ese ciclo,
+usando la velocidad/rumbo EMA de ese mismo ciclo. Comparar contra la
+posición real de la misma `id` ~15/30 min después (2 o 4 ciclos de 90s)
+responde directamente "¿hacia dónde dedujimos que iba la celda vs. hacia
+dónde fue en realidad?", sin que el usuario tenga que calcular la
+proyección a mano.
+
+**Tests nuevos (`test_tracking.py::TestProjectPosition`):** velocidad 0
+→ misma posición; rumbo norte (0°) → solo cambia latitud; rumbo este
+(90°) → solo cambia longitud; distancia escala linealmente con
+velocidad×tiempo (verificado con `_geo_dist_km`).
+
+**Tests:** 218/218 ✅ (214 + 4 nuevos).
+
 ### Estado actual
 
 **Stack:** Backend Google Cloud (`e2-micro`, `us-central1-a`)

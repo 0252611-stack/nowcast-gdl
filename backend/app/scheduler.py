@@ -20,7 +20,13 @@ import numpy as np
 
 from app.nowcast.engine import estimate_arrival
 from app.processing.motion import field_to_global_vector, multi_frame_motion_field
-from app.processing.tracking import TrackedCell, detect_cells, detection_mask, update_tracks
+from app.processing.tracking import (
+    TrackedCell,
+    detect_cells,
+    detection_mask,
+    project_position,
+    update_tracks,
+)
 from app.processing.pixel_extract import reading_for_point
 from app.schemas import WindSample
 from app.sources.openmeteo import (
@@ -398,9 +404,13 @@ async def run_radar_loop(conn: sqlite3.Connection, state: RadarState) -> None:
                 # Registro completo de celdas vivas (no solo la causante de cada
                 # punto) — permite reconstruir la trayectoria real de cualquier
                 # celda ciclo a ciclo (por "id") y compararla contra lo que el
-                # motor predijo para los puntos monitoreados.
-                _cell_registry = [
-                    {
+                # motor predijo para los puntos monitoreados. proj15/proj30:
+                # posición proyectada a rumbo/velocidad constante (deducción de
+                # movimiento de ESTE ciclo) — comparar contra la posición real
+                # de la misma "id" en un ciclo ~15/30 min después.
+                _cell_registry = []
+                for c in state.tracked_cells:
+                    _entry = {
                         "id": c.id,
                         "lat": round(c.lat, 5),
                         "lon": round(c.lon, 5),
@@ -409,8 +419,14 @@ async def run_radar_loop(conn: sqlite3.Connection, state: RadarState) -> None:
                         "brg": round(c.bearing_deg, 0),
                         "age_min": round((c.age_frames - 1) * state._cell_interval_s / 60.0, 1),
                     }
-                    for c in state.tracked_cells
-                ]
+                    if state.last_bounds:
+                        for _lead in (15, 30):
+                            _plat, _plon = project_position(
+                                c.lat, c.lon, c.bearing_deg, c.velocity_kmh,
+                                _lead, state.last_bounds,
+                            )
+                            _entry[f"proj{_lead}"] = [round(_plat, 5), round(_plon, 5)]
+                    _cell_registry.append(_entry)
                 _record = {
                     "frame_time": scan_time.isoformat(),
                     "cycle_s": _cycle_s,

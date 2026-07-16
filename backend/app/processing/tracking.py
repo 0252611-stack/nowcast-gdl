@@ -39,6 +39,28 @@ def _geo_dist_km(
     return math.sqrt(dlat_km**2 + dlon_km**2)
 
 
+def project_position(
+    lat: float, lon: float,
+    bearing_deg: float, speed_kmh: float,
+    minutes: float,
+    bounds: dict[str, float],
+) -> tuple[float, float]:
+    """Proyecta la posición futura de una celda a rumbo/velocidad constante.
+
+    Aproximación lineal simple para diagnóstico (comparar "hacia dónde
+    dedujimos que iba la celda" vs. su posición real unos ciclos después,
+    ver cells[] en el JSONL) — NO es el motor de predicción real de la app
+    (que usa advección semi-Lagrangiana con campo de viento, ver predict.py).
+    """
+    dist_km = speed_kmh * (minutes / 60.0)
+    brg_rad = math.radians(bearing_deg)
+    dlat_km = dist_km * math.cos(brg_rad)
+    dlon_km = dist_km * math.sin(brg_rad)
+    new_lat = lat + dlat_km / _KM_PER_DEG_LAT
+    new_lon = lon + dlon_km / _km_per_deg_lon(bounds)
+    return new_lat, new_lon
+
+
 @dataclass
 class TrackedCell:
     """Celda de eco con identidad persistente entre ciclos del radar."""

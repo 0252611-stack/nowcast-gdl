@@ -773,3 +773,41 @@ class TestRegressionPrediction:
         history = [(20.5, -103.5, datetime(2026, 6, 11, 20, 0, 0, tzinfo=timezone.utc))]
         lat, lon = _predict_position_regression(history, 90.0, BOUNDS)
         assert lat == 20.5 and lon == -103.5
+
+
+class TestProjectPosition:
+    """project_position: proyección lineal rumbo/velocidad constante (diag)."""
+
+    def test_zero_speed_stays_in_place(self):
+        from app.processing.tracking import project_position
+
+        lat, lon = project_position(20.5, -103.5, 90.0, 0.0, 30.0, BOUNDS)
+        assert lat == pytest.approx(20.5)
+        assert lon == pytest.approx(-103.5)
+
+    def test_north_bearing_increases_lat_only(self):
+        """rumbo 0° (norte) — debe mover solo en latitud, no en longitud."""
+        from app.processing.tracking import project_position
+
+        lat, lon = project_position(20.5, -103.5, 0.0, 30.0, 30.0, BOUNDS)
+        assert lat > 20.5
+        assert lon == pytest.approx(-103.5, abs=1e-9)
+
+    def test_east_bearing_increases_lon_only(self):
+        """rumbo 90° (este) — debe mover solo en longitud, no en latitud."""
+        from app.processing.tracking import project_position
+
+        lat, lon = project_position(20.5, -103.5, 90.0, 30.0, 30.0, BOUNDS)
+        assert lon > -103.5
+        assert lat == pytest.approx(20.5, abs=1e-9)
+
+    def test_distance_scales_with_speed_and_minutes(self):
+        """Proyectar a 30 km/h por 60 min debe mover el doble que 30 min."""
+        from app.processing.tracking import project_position, _geo_dist_km
+
+        lat30, lon30 = project_position(20.5, -103.5, 45.0, 30.0, 30.0, BOUNDS)
+        lat60, lon60 = project_position(20.5, -103.5, 45.0, 30.0, 60.0, BOUNDS)
+        d30 = _geo_dist_km(20.5, -103.5, lat30, lon30, BOUNDS)
+        d60 = _geo_dist_km(20.5, -103.5, lat60, lon60, BOUNDS)
+        assert d60 == pytest.approx(2 * d30, rel=1e-6)
+        assert d30 == pytest.approx(30.0 * 0.5, rel=1e-6)  # 30 km/h * 0.5h
