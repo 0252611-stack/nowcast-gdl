@@ -456,7 +456,13 @@ async def run_radar_loop(conn: sqlite3.Connection, state: RadarState) -> None:
                             _entry[f"proj{_lead}"] = [round(_plat, 5), round(_plon, 5)]
                     _cell_registry.append(_entry)
                 _record = {
-                    "frame_time": scan_time.isoformat(),
+                    # Serializado en hora local GDL (UTC-6, sin horario de
+                    # verano) para que el JSONL sea legible directo al
+                    # analizarlo. El resto del scheduler sigue usando UTC
+                    # internamente (scan_time no se toca) — regla del
+                    # proyecto: nunca decidir el día del API del IAM ni
+                    # comparar cutoffs con hora local, solo con UTC.
+                    "frame_time": scan_time.astimezone(config.TZ_LOCAL).isoformat(),
                     "cycle_s": _cycle_s,
                     # --- Detección y tracking ---
                     "n_det": len(dets),

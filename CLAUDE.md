@@ -47,6 +47,12 @@ Antes de trabajar en cualquier módulo, leer:
   read-only). Usar para evaluar el motor y los vectores sin acceso al volumen:
   `curl -s "https://35-255-11-50.sslip.io/diag/log" -o prod_diag.jsonl`
   (host actual en Google Cloud e2-micro; si vuelve a migrar, ver `backend/deploy/README-gcp.md`)
+- `frame_time` (cada línea del JSONL): hora del escaneo del radar, serializada
+  en **hora local GDL** (`America/Mexico_City`, UTC-6 fijo — Jalisco no
+  cambia de horario) para que el log sea legible directo sin conversión.
+  Internamente el scheduler sigue trabajando 100% en UTC (`scan_time` no se
+  toca) — la conversión ocurre solo al escribir esta línea, nunca para
+  decidir el día que se pide al API del IAM ni para los cutoffs de recorte.
 - Campos por punto en `points[]`: `method`, `eta_min`, `conf`, `led_km`,
   `cell_spd`, `cell_brg`, `trend`, `w_radar`, `model_agr`, `cell_age_min`,
   `cell_accel` (aceleración de la celda — diagnóstico puro, no pasa por

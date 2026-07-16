@@ -1999,3 +1999,26 @@ retención 180 días + tope de emergencia 2GB.
   verificación de skill, NO el JSONL que ya dura 180 días).
 - Calibración fina con lluvia real de temporada (sigue vigente de
   sesiones anteriores).
+
+### `frame_time` del JSONL en hora local GDL ✅
+
+Follow-up: el usuario confirmó que el log sí traía fecha/hora (`frame_time`,
+ya existía desde sesión 7) pero en UTC — pidió ajustarlo a hora GDL para
+no tener que convertir a mano al analizarlo.
+
+**Fix (`scheduler.py`):** el único punto donde se serializa `frame_time`
+al JSONL ahora convierte con `scan_time.astimezone(config.TZ_LOCAL)`
+(constante ya existente, `America/Mexico_City`, UTC-6 fijo — Jalisco no
+tiene horario de verano). **La variable interna `scan_time` no se toca en
+ningún otro lado** — sigue siendo UTC para todo lo demás (cálculo de
+`frame_age`, guardado en SQLite, decisión de qué día pedirle al API del
+IAM) — la regla del proyecto de "SIEMPRE UTC internamente, nunca hora
+local para lógica de fechas" se respeta; la conversión es puramente
+cosmética, solo para esa línea del log.
+
+**Verificado:** la comparación de cutoff en `_rotate_diag_log` sigue
+funcionando igual de bien con el nuevo formato (Python compara datetimes
+timezone-aware correctamente sin importar el offset guardado — probado
+a mano antes de desplegar). **Tests:** 220/220 ✅ (sin tests nuevos, es
+una conversión de un one-liner con `astimezone`, ya cubierta por los
+tests existentes de `_rotate_diag_log`).
