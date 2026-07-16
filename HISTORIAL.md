@@ -1862,3 +1862,78 @@ migraron ni se borraron.
   `sudo -u nowcast git -C /opt/nowcast-gdl pull && sudo systemctl restart nowcast-gdl`.
 - Calibración fina con lluvia real de temporada (pendiente de sesiones
   anteriores, sigue vigente).
+
+---
+
+## Sesión 15 — 15 jul 2026 — Fix radar https, más puntos, registro de celdas
+
+### Fix crítico: `radar_iam.py` apuntaba a `http://`, el IAM ya redirige a `https://` ✅
+
+Tras la migración a Google Cloud, el radar quedó permanentemente en
+`radar_available=False` (0 líneas en `/diag/log`, 0 predicciones, 0
+lecturas — nada se guardaba nunca). Diagnóstico por `journalctl` vía SSH:
+el IAM empezó a redirigir `http://` → `https://` (301) en algún momento
+después del 10-jun; `httpx.raise_for_status()` lanza excepción sobre
+*cualquier* respuesta no-2xx (incluidos los 301), así que cada ciclo del
+scheduler moría en el primer request, antes de guardar nada. No era un
+problema del hosting nuevo — solo salió a la luz porque este fue el primer
+arranque limpio desde que el IAM cambió su comportamiento.
+
+**Fix:** `API_URL`/`BASE_URL` en `radar_iam.py` ahora usan `https://`
+directo, evitando el redirect. `docs/spec-radar-iam.md` actualizado con
+una nota del hallazgo. Desplegado en caliente (`git pull` +
+`systemctl restart` por SSH) — confirmado en producción:
+`radar_available: true`, ETA y confianza calculándose de nuevo.
+
+### 19 puntos monitoreados nuevos, para acelerar la recolección de datos ✅
+
+`backend/app/config.py` — 15 puntos estratégicos (`punto_1`..`punto_15`)
+repartidos por Guadalajara, Zapopan (varias zonas), Tlaquepaque, Tonalá,
+Tlajomulco de Zúñiga y El Salto (geocodificados vía Google Maps, no
+inventados) + 4 direcciones específicas del usuario (Cataluña 40, Bahía
+de Acapulco, Oficina Ingredion, HELLA). Se agregaron en caliente vía
+`POST /points` (API admin) usando el `ADMIN_TOKEN` de `/etc/nowcast-gdl.env`
+— sin reiniciar el servicio — y también se sincronizó `config.py` para que
+un futuro seed desde DB vacía los incluya igual. Total: 23 puntos.
+
+**Fix de UI:** `frontend/src/App.jsx` — los 15 puntos genéricos "Punto N"
+se excluyen del dashboard de inicio (`HIDDEN_ON_HOME` regex `/^punto_\d+$/`)
+por no ser relevantes para el usuario final; siguen monitoreados por el
+scheduler igual, y visibles en `/mapa` y `/admin` (que consultan la API
+por su cuenta, sin pasar por este filtro).
+
+### Registro completo de celdas por ciclo en el JSONL — reconstrucción de trayectoria real ✅
+
+**Contexto:** el usuario preguntó si con los logs se podía responder "¿qué
+dirección tuvo la nube en varios momentos y cuál fue su dirección real?".
+Respuesta: no del todo — el JSONL solo guardaba `cell_spd`/`cell_brg` de la
+celda *causante* de la ETA de un punto monitoreado, no la trayectoria
+(lat/lon) de esa celda a través de los ciclos. La pregunta simétrica ("¿el
+punto con lluvia pronosticada en X tiempo sí tuvo lluvia?") ya estaba
+resuelta por `nowcast_predictions`/`/metrics`/`/predictions`.
+
+**Fix (`scheduler.py`):** nuevo campo `cells[]` en el `_record` del JSONL
+— registro de **todas** las celdas vivas del ciclo (no solo la causante),
+con `id, lat, lon, dbz, spd, brg, age_min` por celda (los mismos campos
+que ya vive en `TrackedCell`, solo faltaba serializarlos). Con esto se
+puede filtrar por `id` a través de líneas del JSONL para reconstruir la
+trayectoria real de cualquier celda y compararla contra la dirección que
+el motor predijo para un punto en el mismo ciclo.
+
+**Tests:** 214/214 ✅ (sin tests nuevos — `cells` es un campo puramente
+aditivo al diagnóstico, no cambia ningún contrato/comportamiento existente).
+
+### Estado actual
+
+**Stack:** Backend Google Cloud (`e2-micro`, `us-central1-a`)
+`https://35-255-11-50.sslip.io` · Frontend Vercel
+`https://nowcast-gdl.vercel.app` · 23 puntos monitoreados (8 visibles en
+el dashboard de inicio, 15 solo en `/mapa`/`/admin`).
+
+**Pendiente:**
+- Con `cells[]` ya en el log, repetir el análisis de trayectoria real vs.
+  predicha tras acumular unos días de datos (recomendado al usuario:
+  48-72h+ para cruzar temporada de lluvia, techo de 7 días por
+  `purge_old_predictions`).
+- Calibración fina con lluvia real de temporada (sigue vigente de
+  sesiones anteriores).

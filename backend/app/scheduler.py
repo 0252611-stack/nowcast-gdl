@@ -395,6 +395,22 @@ async def run_radar_loop(conn: sqlite3.Connection, state: RadarState) -> None:
                 # Skill actual (lectura ligera de DB, sin bloquear el ciclo)
                 _sm = get_skill_metrics(conn)
                 _sk_o = _sm.get("overall", {}) if _sm.get("verified", 0) > 0 else {}
+                # Registro completo de celdas vivas (no solo la causante de cada
+                # punto) — permite reconstruir la trayectoria real de cualquier
+                # celda ciclo a ciclo (por "id") y compararla contra lo que el
+                # motor predijo para los puntos monitoreados.
+                _cell_registry = [
+                    {
+                        "id": c.id,
+                        "lat": round(c.lat, 5),
+                        "lon": round(c.lon, 5),
+                        "dbz": round(c.mean_dbz, 1),
+                        "spd": round(c.velocity_kmh, 1),
+                        "brg": round(c.bearing_deg, 0),
+                        "age_min": round((c.age_frames - 1) * state._cell_interval_s / 60.0, 1),
+                    }
+                    for c in state.tracked_cells
+                ]
                 _record = {
                     "frame_time": scan_time.isoformat(),
                     "cycle_s": _cycle_s,
@@ -408,6 +424,8 @@ async def run_radar_loop(conn: sqlite3.Connection, state: RadarState) -> None:
                     **track_diag,
                     # --- Vectores (optical flow) ---
                     **_flow_stats,
+                    # --- Celdas vivas este ciclo (trayectoria real, ver arriba) ---
+                    "cells": _cell_registry,
                     # --- Motor: predicción por punto ---
                     "points": _point_diag,
                     # --- Verificación de este ciclo (crudo, re-agregable por ventana) ---

@@ -54,6 +54,12 @@ Antes de trabajar en cualquier módulo, leer:
   excluida de POD/FAR/CSI por confianza < `PREDICTED_RAIN_MIN_CONFIDENCE`).
   Verificación por ciclo: `verif_n/hit/fa/miss/cn` (re-agregable por
   ventana, además del `skill_*` acumulado global).
+- `cells[]` (sesión 15): registro de TODAS las celdas vivas del ciclo, no
+  solo la causante de cada punto — `id, lat, lon, dbz, spd, brg, age_min`.
+  Permite reconstruir la trayectoria real de cualquier celda filtrando por
+  `id` a través de líneas del JSONL, y comparar contra el `cell_spd`/`cell_brg`
+  que el motor predijo para un punto en el mismo ciclo (¿la celda realmente
+  fue hacia donde se predijo?).
 - `DIAG_LOG_RETENTION_DAYS=14` — el JSONL se recorta una vez por hora
   (`_rotate_diag_log` en `scheduler.py`); `READINGS_RETENTION_HOURS=24`
   purga `point_readings` cada ciclo (`purge_old_readings` en `storage.py`).
