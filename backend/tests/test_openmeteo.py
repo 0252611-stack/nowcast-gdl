@@ -174,6 +174,42 @@ async def test_fetch_forecast_cached_skips_http_on_second_call():
 
 
 # ---------------------------------------------------------------------------
+# Test 3c: circuit breaker -- un 429 activa un cooldown global; mientras dura,
+# TODA llamada (incluso a otro punto) falla rápido sin tocar la red, sin
+# reintentos. Bug real de producción: sin esto, cada 429 disparaba 3
+# reintentos con backoff por punto, y como los fallos no se cachean, el
+# scheduler volvía a golpear los 23 puntos cada 90s -- un retry-storm que
+# nunca dejaba que Open-Meteo se recuperara.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_429_triggers_global_cooldown_and_stops_retries():
+    om._cache.clear()
+    om._rate_limited_until = 0.0
+    try:
+        call_count = 0
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal call_count
+            call_count += 1
+            return httpx.Response(429, content=b"Too Many Requests")
+
+        transport = httpx.MockTransport(handler)
+
+        async with httpx.AsyncClient(transport=transport) as client:
+            with pytest.raises(om.OpenMeteoRateLimited):
+                await om.fetch_forecast(client, "centro", "Centro GDL", 20.6767, -103.3475)
+            assert call_count == 1, "un 429 no debe reintentarse (tenacity debe cortar de inmediato)"
+
+            # Otro punto, mismo cooldown global -- ni siquiera debe llegar a la red.
+            with pytest.raises(om.OpenMeteoRateLimited):
+                await om.fetch_forecast(client, "otro", "Otro Punto", 20.7, -103.4)
+            assert call_count == 1, "en cooldown, no debe hacerse ninguna request nueva"
+    finally:
+        om._rate_limited_until = 0.0
+
+
+# ---------------------------------------------------------------------------
 # Test 4: Pydantic raises ValidationError on unknown extra field in hourly
 # ---------------------------------------------------------------------------
 

@@ -136,7 +136,11 @@ otro archivo.
    (sesión 16, ver `HISTORIAL.md`): sin cache, un ciclo de 90s con muchos
    puntos supera fácilmente el rate-limit de Open-Meteo, y como una
    llamada fallida nunca queda en cache, el siguiente ciclo reintenta
-   todo de nuevo y el 429 nunca cesa por sí solo.
+   todo de nuevo y el 429 nunca cesa por sí solo. Además, `_get_with_retry`
+   en `openmeteo.py` tiene un circuit breaker global (`OpenMeteoRateLimited`,
+   cooldown de 120s): un 429 no se reintenta y bloquea TODA nueva llamada
+   (cualquier punto) hasta que expire — no quitar esto, sin él un 429
+   sostenido se retroalimenta vía los reintentos de `tenacity`.
 4. El subagente radar-engineer valida contra `backend/tests/fixtures/`
    antes de declarar terminada cualquier función de procesamiento
 5. User-Agent identificable en todo request al IAM:

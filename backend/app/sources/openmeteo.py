@@ -4,15 +4,38 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 import httpx
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from app.schemas import HourlyForecast, PointForecast
 
 logger = logging.getLogger(__name__)
+
+
+class OpenMeteoRateLimited(Exception):
+    """Open-Meteo devolvió 429 recientemente -- en cooldown, no reintentar todavía.
+
+    Sesión 16: sin esto, un 429 disparaba 3 reintentos con backoff (tenacity)
+    *por punto*, y como una llamada fallida nunca se cachea, el siguiente
+    ciclo de 90s del scheduler volvía a golpear los 23 puntos desde cero --
+    un retry-storm autosostenido que nunca dejaba que el rate-limit de
+    Open-Meteo se enfriara. Ahora, el primer 429 activa un cooldown global
+    (`_RATE_LIMIT_COOLDOWN_S`) durante el cual TODA llamada a `_get_with_retry`
+    falla rápido sin tocar la red, sin reintentos -- le da tiempo a Open-Meteo
+    de dejar de bloquearnos en vez de seguir insistiendo.
+    """
+
+
+_RATE_LIMIT_COOLDOWN_S = 120.0
+_rate_limited_until: float = 0.0
+
+
+def _retry_if_not_rate_limited(exc: BaseException) -> bool:
+    return not isinstance(exc, OpenMeteoRateLimited)
 
 _BASE_URL = "https://api.open-meteo.com/v1/forecast"
 _ENSEMBLE_URL = "https://ensemble-api.open-meteo.com/v1/ensemble"
@@ -108,11 +131,30 @@ def _hour_bucket() -> str:
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=1, max=10),
+    retry=retry_if_exception(_retry_if_not_rate_limited),
     reraise=True,
 )
 async def _get_with_retry(client: httpx.AsyncClient, url: str, params: dict) -> dict:
-    """GET request with up to 3 retries and exponential backoff."""
+    """GET request with up to 3 retries and exponential backoff.
+
+    Un 429 NO se reintenta (reintentar un rate-limit solo empeora el
+    bloqueo) -- activa el cooldown global y falla de inmediato. Mientras el
+    cooldown esté activo, ni siquiera se hace la request.
+    """
+    global _rate_limited_until
+    if time.monotonic() < _rate_limited_until:
+        raise OpenMeteoRateLimited(
+            f"Open-Meteo en cooldown por 429 reciente "
+            f"({_rate_limited_until - time.monotonic():.0f}s restantes)."
+        )
     response = await client.get(url, params=params, timeout=10.0)
+    if response.status_code == 429:
+        _rate_limited_until = time.monotonic() + _RATE_LIMIT_COOLDOWN_S
+        logger.warning(
+            "Open-Meteo devolvió 429 -- cooldown de %.0fs activado para toda la app.",
+            _RATE_LIMIT_COOLDOWN_S,
+        )
+        raise OpenMeteoRateLimited("Open-Meteo 429 Too Many Requests")
     response.raise_for_status()
     return response.json()
 

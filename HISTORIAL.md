@@ -2064,8 +2064,40 @@ internamente (`_fetch_or_cache`, ahora refactorizado para reusarla).
 Se actualizaron los mocks de `test_api.py` y `test_rainviewer.py` que
 parcheaban `app.main.fetch_forecast` (ahora parchean
 `app.main.fetch_forecast_cached`, que es lo que el código realmente llama).
-**Tests:** 222/222 ✅ (221 + 1 nuevo).
+**Tests:** 221/221 ✅ (220 + 1 nuevo).
 
-**Pendiente de este fix:** desplegar a la VM (`git pull` + `systemctl
-restart nowcast-gdl`) y confirmar en producción que los 429 cesan y el
-frontend deja el modo offline.
+Desplegado a la VM (`git pull` + `systemctl restart nowcast-gdl`) — pero
+al probar `/points/*/forecast` en vivo seguían devolviendo 500 con 429
+en `journalctl`, sin cesar. Esperable en parte (el cache en memoria se
+vació al reiniciar el proceso), pero reveló un segundo problema real,
+independiente del primero.
+
+### Fix 2 (mismo incidente): circuit breaker global para 429 — retry-storm autosostenido
+
+El cache por sí solo no bastaba: mientras Open-Meteo siguiera devolviendo
+429 para TODOS los puntos, ninguna llamada llegaba a cachearse nunca, así
+que cada ciclo de 90s del scheduler volvía a intentar los 23 puntos desde
+cero — y cada intento fallido disparaba 3 reintentos de `tenacity` con
+backoff. Es decir: el propio mecanismo de reintentos era el que sostenía
+el bloqueo indefinidamente, en vez de darle tiempo a Open-Meteo para
+levantarlo.
+
+**Fix (`openmeteo.py`):** nueva excepción `OpenMeteoRateLimited` +
+cooldown global (`_rate_limited_until`, 120s) en `_get_with_retry`:
+- Si la respuesta es 429, se activa el cooldown y se lanza
+  `OpenMeteoRateLimited` **sin reintentar** (el predicado de `tenacity`
+  excluye explícitamente este tipo de excepción de sus 3 reintentos —
+  reintentar un rate-limit solo empeora el bloqueo).
+- Mientras el cooldown esté activo, cualquier llamada a `_get_with_retry`
+  — de cualquier punto, desde cualquiera de los 3 sitios — falla de
+  inmediato sin tocar la red. Esto corta de raíz el retry-storm y le da
+  a Open-Meteo una ventana real sin tráfico nuestro para dejar de
+  bloquearnos.
+
+**Tests nuevos:** `test_429_triggers_global_cooldown_and_stops_retries`
+(un 429 no se reintenta; una segunda llamada durante el cooldown no llega
+a la red). **Tests:** 222/222 ✅ (221 + 1 nuevo).
+
+**Pendiente de este fix:** ambos fixes ya desplegados a la VM (`git pull`
++ `systemctl restart nowcast-gdl`) — falta confirmar en producción que
+los 429 cesan definitivamente y el frontend deja el modo offline.
