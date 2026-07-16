@@ -30,7 +30,7 @@ from app.processing.tracking import (
 from app.processing.pixel_extract import reading_for_point
 from app.schemas import WindSample
 from app.sources.openmeteo import (
-    fetch_all_points, fetch_ensemble, fetch_forecast, fetch_wind_700_at,
+    fetch_all_points, fetch_ensemble, fetch_forecast_cached, fetch_wind_700_at,
     get_cache_stats, sample_trajectory_wind,
 )
 from app.sources.radar_iam import RadarUnavailable, fetch_current_frame
@@ -284,7 +284,7 @@ async def run_radar_loop(conn: sqlite3.Connection, state: RadarState) -> None:
                     try:
                         # A4: cap de tiempo por punto para no desincronizar el ciclo de 90 s.
                         forecast = await asyncio.wait_for(
-                            fetch_forecast(fc, pt["id"], pt["name"], pt["lat"], pt["lon"]),
+                            fetch_forecast_cached(fc, pt["id"], pt["name"], pt["lat"], pt["lon"]),
                             timeout=12.0,
                         )
                         reading = get_latest_reading(conn, pt["id"])

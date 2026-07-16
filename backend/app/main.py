@@ -32,7 +32,7 @@ from app.schemas import (
 )
 from app.sources.openmeteo import (
     fetch_ensemble,
-    fetch_forecast,
+    fetch_forecast_cached,
     fetch_wind_700_at,
     sample_precip_grid,
     sample_trajectory_wind,
@@ -357,7 +357,7 @@ async def get_forecast(point_id: str):
     async with httpx.AsyncClient(
         headers={"User-Agent": config.USER_AGENT}, timeout=10
     ) as client:
-        forecast = await fetch_forecast(client, pt["id"], pt["name"], pt["lat"], pt["lon"])
+        forecast = await fetch_forecast_cached(client, pt["id"], pt["name"], pt["lat"], pt["lon"])
     return forecast
 
 
@@ -378,7 +378,7 @@ async def get_radar(point_id: str):
     ) as client:
         try:
             frames = get_recent_frames(app.state.db, 2)
-            forecast = await fetch_forecast(client, pt["id"], pt["name"], pt["lat"], pt["lon"])
+            forecast = await fetch_forecast_cached(client, pt["id"], pt["name"], pt["lat"], pt["lon"])
             # Ensemble (Fase 2): probabilidad de precipitación del spread NWP
             ensemble_prob: float | None = None
             try:

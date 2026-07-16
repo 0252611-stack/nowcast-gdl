@@ -129,7 +129,14 @@ otro archivo.
 1. Todo dato externo se valida con Pydantic antes de usarse
 2. Degradación con gracia: si el radar IAM falla 3 veces seguidas →
    servir solo Open-Meteo y marcar la capa radar "no disponible"
-3. Cache obligatorio en Open-Meteo (límite 10k calls/día; objetivo < 200/día)
+3. Cache obligatorio en Open-Meteo (límite 10k calls/día; objetivo < 200/día).
+   **Usar SIEMPRE `fetch_forecast_cached()`** para servir puntos en vivo
+   (scheduler, endpoints `/forecast` y `/radar`) — `fetch_forecast()` sin
+   cache causó un 429 sostenido en producción al escalar a 23 puntos
+   (sesión 16, ver `HISTORIAL.md`): sin cache, un ciclo de 90s con muchos
+   puntos supera fácilmente el rate-limit de Open-Meteo, y como una
+   llamada fallida nunca queda en cache, el siguiente ciclo reintenta
+   todo de nuevo y el 429 nunca cesa por sí solo.
 4. El subagente radar-engineer valida contra `backend/tests/fixtures/`
    antes de declarar terminada cualquier función de procesamiento
 5. User-Agent identificable en todo request al IAM:

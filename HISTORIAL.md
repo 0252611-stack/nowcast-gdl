@@ -2022,3 +2022,50 @@ timezone-aware correctamente sin importar el offset guardado — probado
 a mano antes de desplegar). **Tests:** 220/220 ✅ (sin tests nuevos, es
 una conversión de un one-liner con `astimezone`, ya cubierta por los
 tests existentes de `_rotate_diag_log`).
+
+---
+
+## Sesión 16 — 16 jul 2026 — Fix crítico: "modo offline" por falta de cache en Open-Meteo
+
+Reporte del usuario: la app en producción mostraba "modo offline" (datos
+mock del frontend). Diagnóstico en vivo por SSH: `/points/{id}/forecast`
+devolvía HTTP 500 para los 23 puntos; `journalctl` mostraba
+`httpx.HTTPStatusError: Client error '429 Too Many Requests'` de Open-Meteo,
+de forma sostenida (401 ocurrencias en 10 min, 118 en los últimos 3 min —
+no era un pico transitorio que fuera a autorresolverse).
+
+**Causa raíz:** `openmeteo.py` sí tiene un cache obligatorio por
+`(point_id, hora_UTC)` (regla 3 de `CLAUDE.md`), pero solo lo usaba
+`fetch_all_points` (una función que nadie llamaba desde el loop en vivo).
+Los 3 sitios que sirven datos en tiempo real llamaban a `fetch_forecast()`
+**sin pasar por el cache**:
+- `scheduler.py`, loop principal cada 90s (una llamada por punto).
+- `main.py`, endpoint `GET /points/{id}/forecast`.
+- `main.py`, endpoint `GET /points/{id}/radar`.
+
+Con 4 puntos esto pasaba desapercibido (~2.7 calls/min). Al subir a 23
+puntos en la sesión anterior, el loop del scheduler solo generaba
+~15 calls/min sin cache — suficiente para gatillar el rate-limit de
+Open-Meteo. Y como una llamada fallida (429) nunca escribe en el cache,
+el siguiente ciclo de 90s reintentaba los 23 puntos de nuevo, sosteniendo
+el 429 indefinidamente en vez de que fuera un evento único.
+
+**Fix (`openmeteo.py`):** nueva función pública `fetch_forecast_cached()`
+que aplica exactamente el mismo cache que ya usaba `fetch_all_points`
+internamente (`_fetch_or_cache`, ahora refactorizado para reusarla).
+`fetch_forecast()` sin cache queda solo para uso interno/tests.
+
+**Fix (`scheduler.py` + `main.py`):** los 3 sitios ahora llaman a
+`fetch_forecast_cached()` en vez de `fetch_forecast()` directo — máximo
+1 request real a Open-Meteo por punto por hora (23/hora en vez de hasta
+~920/hora), muy por debajo del objetivo de <200 calls/día de la regla 3.
+
+**Tests nuevos:** `test_openmeteo.py::test_fetch_forecast_cached_skips_http_on_second_call`.
+Se actualizaron los mocks de `test_api.py` y `test_rainviewer.py` que
+parcheaban `app.main.fetch_forecast` (ahora parchean
+`app.main.fetch_forecast_cached`, que es lo que el código realmente llama).
+**Tests:** 222/222 ✅ (221 + 1 nuevo).
+
+**Pendiente de este fix:** desplegar a la VM (`git pull` + `systemctl
+restart nowcast-gdl`) y confirmar en producción que los 429 cesan y el
+frontend deja el modo offline.

@@ -83,7 +83,7 @@ def test_list_points(client):
 
 def test_forecast_returns_point_forecast(client):
     c, _, _ = client
-    with patch("app.main.fetch_forecast", new_callable=AsyncMock) as mock_ff:
+    with patch("app.main.fetch_forecast_cached", new_callable=AsyncMock) as mock_ff:
         mock_ff.return_value = _mock_forecast("up_gdl")
         resp = c.get("/points/up_gdl/forecast")
     assert resp.status_code == 200

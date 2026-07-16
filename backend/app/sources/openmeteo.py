@@ -185,11 +185,42 @@ async def fetch_forecast(
     )
 
 
+async def fetch_forecast_cached(
+    client: httpx.AsyncClient,
+    point_id: str,
+    name: str,
+    lat: float,
+    lon: float,
+) -> PointForecast:
+    """Como fetch_forecast, pero con el cache obligatorio por (point_id, hora
+    UTC) aplicado -- máximo 1 request real a Open-Meteo por punto por hora.
+
+    Usar SIEMPRE para servir puntos individuales (endpoint /forecast, /radar,
+    y el loop del scheduler): llamar a fetch_forecast() directo en esos
+    sitios se detectó como bug real en producción (sesión 17) -- con 23
+    puntos, el loop del scheduler cada 90s generaba ~15 calls/min sin cache,
+    suficiente para gatillar el rate-limit de Open-Meteo (429) de forma
+    sostenida en vez de una sola vez. fetch_forecast() sin cache queda solo
+    para tests / uso interno de este módulo.
+    """
+    bucket = _hour_bucket()
+    _maybe_purge_all(bucket)  # A1: purgar entradas de horas anteriores
+    cache_key = (point_id, bucket)
+    if cache_key in _cache:
+        logger.debug("Cache hit for point %s bucket %s", point_id, bucket)
+        return _cache[cache_key]
+
+    _record_miss()  # L5: contabilizar request real
+    result = await fetch_forecast(client, point_id=point_id, name=name, lat=lat, lon=lon)
+    _cache[cache_key] = result
+    return result
+
+
 async def fetch_all_points(
     client: httpx.AsyncClient,
     points: list[dict],
 ) -> list[PointForecast]:
-    """Ejecuta fetch_forecast en paralelo para todos los puntos de `points`.
+    """Ejecuta fetch_forecast_cached en paralelo para todos los puntos de `points`.
 
     Respeta el límite de Open-Meteo: máximo 1 request por punto por hora
     (cache obligatorio por clave (point_id, hora_truncada)).
@@ -198,25 +229,12 @@ async def fetch_all_points(
     bucket = _hour_bucket()
     _maybe_purge_all(bucket)  # A1: purgar entradas de horas anteriores
 
-    async def _fetch_or_cache(point: dict) -> PointForecast:
-        pid = point["id"]
-        cache_key = (pid, bucket)
-        if cache_key in _cache:
-            logger.debug("Cache hit for point %s bucket %s", pid, bucket)
-            return _cache[cache_key]
-
-        _record_miss()  # L5: contabilizar request real
-        result = await fetch_forecast(
-            client,
-            point_id=pid,
-            name=point["name"],
-            lat=point["lat"],
-            lon=point["lon"],
+    async def _one(point: dict) -> PointForecast:
+        return await fetch_forecast_cached(
+            client, point["id"], point["name"], point["lat"], point["lon"]
         )
-        _cache[cache_key] = result
-        return result
 
-    return list(await asyncio.gather(*(_fetch_or_cache(p) for p in points)))
+    return list(await asyncio.gather(*(_one(p) for p in points)))
 
 
 _VALID_LEVELS = {850, 700, 500}

@@ -144,6 +144,36 @@ async def test_fetch_all_points_uses_cache():
 
 
 # ---------------------------------------------------------------------------
+# Test 3b: fetch_forecast_cached — el punto de entrada usado por el scheduler
+# y por los endpoints /forecast y /radar debe cachear igual que fetch_all_points.
+# Bug real de producción (sesión 17): esos 3 sitios llamaban fetch_forecast()
+# sin cache, generando 1 request/punto/ciclo de 90s en vez de 1/punto/hora.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_fetch_forecast_cached_skips_http_on_second_call():
+    om._cache.clear()
+
+    payload = _make_open_meteo_payload(n=12)
+    call_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        return httpx.Response(200, content=json.dumps(payload).encode())
+
+    transport = httpx.MockTransport(handler)
+
+    async with httpx.AsyncClient(transport=transport) as client:
+        r1 = await om.fetch_forecast_cached(client, "centro", "Centro GDL", 20.6767, -103.3475)
+        assert call_count == 1
+        r2 = await om.fetch_forecast_cached(client, "centro", "Centro GDL", 20.6767, -103.3475)
+        assert call_count == 1, "segunda llamada en el mismo bucket de hora debe usar cache"
+
+    assert r1.point_id == r2.point_id == "centro"
+
+
+# ---------------------------------------------------------------------------
 # Test 4: Pydantic raises ValidationError on unknown extra field in hourly
 # ---------------------------------------------------------------------------
 

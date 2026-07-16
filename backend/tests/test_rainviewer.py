@@ -153,7 +153,7 @@ def test_radar_endpoint_has_rainviewer_url_field():
     with (
         patch("app.main.get_latest_reading", return_value=_mock_reading("up_gdl")),
         patch("app.main.get_recent_frames", return_value=[]),
-        patch("app.main.fetch_forecast", new_callable=AsyncMock) as mock_ff,
+        patch("app.main.fetch_forecast_cached", new_callable=AsyncMock) as mock_ff,
         patch("app.main.estimate_arrival", return_value=None),
     ):
         mock_ff.return_value = _mock_forecast("up_gdl")
