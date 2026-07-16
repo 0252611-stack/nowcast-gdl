@@ -65,10 +65,15 @@ Antes de trabajar en cualquier módulo, leer:
   ~15/30 min después, sin tener que calcular la proyección a mano
   (`project_position` en `tracking.py`; es una aproximación lineal simple
   para diagnóstico, NO el motor de predicción real de `predict.py`).
-- `DIAG_LOG_RETENTION_DAYS=14` — el JSONL se recorta una vez por hora
-  (`_rotate_diag_log` en `scheduler.py`); `READINGS_RETENTION_HOURS=24`
-  purga `point_readings` cada ciclo (`purge_old_readings` en `storage.py`).
-  Ninguna de las dos tablas/archivos crece sin límite.
+- `DIAG_LOG_RETENTION_DAYS=180` (~1 temporada de lluvias) + `DIAG_LOG_MAX_BYTES=2GB`
+  (tope duro, red de seguridad independiente de los días) — el JSONL se
+  recorta una vez por hora (`_rotate_diag_log` en `scheduler.py`);
+  `READINGS_RETENTION_HOURS=24` purga `point_readings` cada ciclo
+  (`purge_old_readings` en `storage.py`). Ninguna de las dos tablas/archivos
+  crece sin límite. Al ritmo medido en producción (~6 KB/ciclo con
+  `cells[]`+23 puntos) 180 días son solo ~1 GB — el tope de 2GB no debería
+  activarse nunca en operación normal, solo si algo dispara el crecimiento
+  por encima de lo esperado.
 - **Bug de `cell_spd` sin tope físico — corregido:** gate dinámico +
   clamp en `tracking.py` (celdas rastreadas) y en `vector_to_speed_bearing`
   de `motion.py` (flujo óptico/advección), tope `CELL_MAX_SPEED_KMH=80.0`.
@@ -79,12 +84,17 @@ Antes de trabajar en cualquier módulo, leer:
 `DBZ_THRESHOLD=18.0`, `DBZ_RAIN_THRESHOLD=18.0`, `CELL_MAX_PX=2000`,
 `CELL_SPLIT_DBZ=30.0`, `CELL_PREDICT_REGRESSION=True`,
 `TRACKING_STATE_MAX_AGE_MIN=30`, `INTENSITY_VERDICT_DBZ_DELTA=3.0`,
-`CELL_MAX_SPEED_KMH=80.0`, `PREDICTED_RAIN_MIN_CONFIDENCE=0.30`
+`CELL_MAX_SPEED_KMH=80.0`, `PREDICTED_RAIN_MIN_CONFIDENCE=0.30`,
+`DIAG_LOG_RETENTION_DAYS=180`, `DIAG_LOG_MAX_BYTES=2147483648` (2 GB)
 
 ## Datos críticos (verificados 10-jun-2026)
 
-- API radar IAM: `POST http://iam.cucei.udg.mx/radar/iam/api/api_radar.php?tipo_solicitud=kmz_act`
-  con body `radar=_ZH_&fecha=YYYYMMDD` (fecha en **UTC**)
+- API radar IAM: `POST https://iam.cucei.udg.mx/radar/iam/api/api_radar.php?tipo_solicitud=kmz_act`
+  con body `radar=_ZH_&fecha=YYYYMMDD` (fecha en **UTC**) — **usar siempre
+  `https://` directo**: el IAM redirige `http://`→`https://` desde algún
+  momento tras el 10-jun-2026, y `httpx.raise_for_status()` lanza excepción
+  sobre CUALQUIER no-2xx (incluidos 301) — con `http://` el ciclo del
+  scheduler moría en el primer request, sin guardar nada (sesión 15).
 - El KMZ devuelto contiene el PNG del radar + doc.kml con bounds
 - Bounds de referencia: N 22.0303, S 19.3206, E -101.9462, O -104.8254
   (re-extraer de cada doc.kml, no hardcodear)

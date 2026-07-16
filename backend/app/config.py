@@ -124,7 +124,15 @@ DIAG_LOG_PATH: str = os.getenv("DIAG_LOG_PATH", str(_data_dir / "logs" / "nowcas
 # Días de historial a conservar en el JSONL de diagnóstico. Sin esto el archivo
 # crece sin límite (append-only, sin purga). Se recorta una vez por hora
 # (run_forecast_loop), eliminando las líneas más viejas que el retention.
-DIAG_LOG_RETENTION_DAYS: int = int(os.getenv("DIAG_LOG_RETENTION_DAYS", "14"))
+# 180 días ≈ una temporada de lluvias completa; al ritmo medido en producción
+# (~6 KB/ciclo con cells[]+puntos actuales) esto son solo ~1 GB en disco.
+DIAG_LOG_RETENTION_DAYS: int = int(os.getenv("DIAG_LOG_RETENTION_DAYS", "180"))
+# Tope duro de tamaño (bytes) — red de seguridad independiente de los días de
+# arriba. Si algo dispara el ritmo de crecimiento sin que nadie lo note (ej.
+# un bug de tracking que multiplique las celdas detectadas por ciclo), esto
+# evita que el disco se llene antes de que el recorte por días vuelva a bajarlo.
+# No debería activarse en operación normal. Default 2 GB.
+DIAG_LOG_MAX_BYTES: int = int(os.getenv("DIAG_LOG_MAX_BYTES", str(2 * 1024 * 1024 * 1024)))
 # Retención de radar_frames/point_readings en SQLite (horas). point_readings
 # no tenía purga propia — sin esto crecía sin límite (una fila por punto/ciclo).
 READINGS_RETENTION_HOURS: int = 24

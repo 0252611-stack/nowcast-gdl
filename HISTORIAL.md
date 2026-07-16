@@ -1951,17 +1951,51 @@ velocidad×tiempo (verificado con `_geo_dist_km`).
 
 **Tests:** 218/218 ✅ (214 + 4 nuevos).
 
+### Retención del JSONL: 14 días → 180 días + tope de 2GB de emergencia ✅
+
+Follow-up: el usuario preguntó cuánto costaba en disco/crédito de Google
+guardar los logs (respuesta con datos reales medidos en la VM: ~6.2 KB/
+ciclo, ~5.9 MB/día, la VM está en Always Free y no toca el crédito de
+prueba). Con eso claro, pidió cambiar la retención — propuesta inicial del
+usuario era "si el archivo se acerca a 10GB, borrar los últimos 14 días".
+
+**Contrapropuesta (aceptada):** un trigger de 10GB nunca se activaría en la
+práctica (~4.75 años al ritmo medido) — no protege nada. Mejor: subir la
+ventana de días (hay 23GB libres de sobra) + un tope de tamaño bajo como
+red de seguridad real ante un crecimiento inesperado (bug futuro que
+dispare el número de celdas detectadas, etc.), independiente de los días.
+
+**Fix (`config.py` + `scheduler.py`):**
+- `DIAG_LOG_RETENTION_DAYS`: `14` → `180` (~1 temporada de lluvias; a
+  ~6 KB/ciclo son solo ~1 GB en disco).
+- Nueva constante `DIAG_LOG_MAX_BYTES = 2 GB` (configurable por env var).
+- `_rotate_diag_log(retention_days, max_bytes=None)`: tras el recorte por
+  días de siempre, si el archivo aún supera `max_bytes` se descartan las
+  líneas más viejas adicionales (barrido único O(n) desde el final, no
+  recorta línea por línea con join repetido) hasta bajar del tope.
+
+**Tests nuevos:** `test_rotate_diag_log_enforces_size_cap_as_safety_net`
+(fuerza el tope con un `max_bytes` chico, verifica que se conservan las
+líneas más recientes) y `test_rotate_diag_log_size_cap_noop_when_under_limit`
+(no recorta de más si ya está bajo el tope). **Tests:** 220/220 ✅.
+
+También aproveché para corregir `CLAUDE.md`: seguía documentando
+`http://iam.cucei.udg.mx` (el bug del fix de https de esta misma sesión)
+como si fuera la URL correcta — actualizado a `https://` con nota del porqué.
+
 ### Estado actual
 
 **Stack:** Backend Google Cloud (`e2-micro`, `us-central1-a`)
 `https://35-255-11-50.sslip.io` · Frontend Vercel
 `https://nowcast-gdl.vercel.app` · 23 puntos monitoreados (8 visibles en
-el dashboard de inicio, 15 solo en `/mapa`/`/admin`).
+el dashboard de inicio, 15 solo en `/mapa`/`/admin`). JSONL de diagnóstico:
+retención 180 días + tope de emergencia 2GB.
 
 **Pendiente:**
-- Con `cells[]` ya en el log, repetir el análisis de trayectoria real vs.
-  predicha tras acumular unos días de datos (recomendado al usuario:
-  48-72h+ para cruzar temporada de lluvia, techo de 7 días por
-  `purge_old_predictions`).
+- Con `cells[]`+`proj15`/`proj30` ya en el log, repetir el análisis de
+  trayectoria real vs. predicha tras acumular unos días de datos
+  (recomendado al usuario: 48-72h+ para cruzar temporada de lluvia; el
+  techo de 7 días de `purge_old_predictions` sigue limitando la
+  verificación de skill, NO el JSONL que ya dura 180 días).
 - Calibración fina con lluvia real de temporada (sigue vigente de
   sesiones anteriores).

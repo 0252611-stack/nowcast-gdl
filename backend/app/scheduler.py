@@ -88,15 +88,21 @@ def _scan_time_from_kmz_url(kmz_url: str) -> datetime:
         return datetime.now(timezone.utc)
 
 
-def _rotate_diag_log(retention_days: int) -> None:
-    """Recorta el JSONL de diagnóstico a los últimos retention_days.
+def _rotate_diag_log(retention_days: int, max_bytes: int | None = None) -> None:
+    """Recorta el JSONL de diagnóstico a los últimos retention_days, y aplica
+    además un tope duro de tamaño (max_bytes) como red de seguridad.
 
     Es append-only y sin esto crece sin límite (~1 línea/ciclo de 90s ≈ 960/día).
     Se llama una vez por hora desde run_forecast_loop, no en cada ciclo de radar.
+    El tope de tamaño protege ante un crecimiento inesperado por encima de lo
+    que la retención por días asume (ej. un bug que dispare el número de
+    celdas detectadas por ciclo) — no debería activarse en operación normal.
     """
     diag_path = Path(config.DIAG_LOG_PATH)
     if not diag_path.exists():
         return
+    if max_bytes is None:
+        max_bytes = config.DIAG_LOG_MAX_BYTES
     try:
         cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
         lines = diag_path.read_text(encoding="utf-8").splitlines()
@@ -108,6 +114,28 @@ def _rotate_diag_log(retention_days: int) -> None:
                     kept.append(line)
             except Exception:
                 continue  # línea corrupta o sin frame_time — se descarta
+
+        # Red de seguridad: si aun tras el recorte por días el archivo supera
+        # max_bytes, seguir descartando las líneas más viejas (un solo barrido
+        # desde el final, O(n)) hasta bajar del tope.
+        if max_bytes and kept:
+            total_bytes = sum(len(l.encode("utf-8")) + 1 for l in kept)
+            if total_bytes > max_bytes:
+                n_before_cap = len(kept)
+                acc = 0
+                cutoff_idx = 0
+                for i in range(len(kept) - 1, -1, -1):
+                    acc += len(kept[i].encode("utf-8")) + 1
+                    if acc > max_bytes:
+                        cutoff_idx = i + 1
+                        break
+                kept = kept[cutoff_idx:]
+                log.warning(
+                    "Diag JSONL superó el tope de %d MB tras recorte por días "
+                    "(retention=%dd) — recorte de emergencia adicional: %d -> %d líneas.",
+                    max_bytes // (1024 * 1024), retention_days, n_before_cap, len(kept),
+                )
+
         if len(kept) < len(lines):
             diag_path.write_text(
                 "\n".join(kept) + ("\n" if kept else ""), encoding="utf-8"
