@@ -89,3 +89,55 @@ sudo journalctl -u nowcast-gdl -f
 Igual que en Oracle: no hay auto-deploy por git push, hay que actualizar a
 mano. El JSONL de diagnóstico sigue disponible vía `GET /diag/log?tail=N`
 sin cambios, con su rotación automática existente.
+
+## Subida semanal a GCS + BigQuery (sesión 16)
+
+`backend/deploy/weekly_log_upload.py` sube el JSONL de diagnóstico cada
+semana: una copia comprimida a Cloud Storage (respaldo crudo) y una carga
+a BigQuery (consulta directa por SQL, sin descargar nada). No modifica el
+JSONL original — es de solo lectura sobre el archivo, la retención de 180
+días + tope de 2GB en el disco sigue funcionando exactamente igual.
+
+**Recursos creados** (proyecto `genial-post-502521-m2`, región `us-central1`):
+- Bucket GCS: `gs://nowcast-gdl-diag-logs-genial-post-502521-m2`
+- Dataset BigQuery: `nowcast_diag` (tabla `cycles`, se crea sola en la
+  primera carga vía `autodetect`)
+- Cuenta de servicio dedicada: `nowcast-log-uploader@genial-post-502521-m2.iam.gserviceaccount.com`
+  — permisos mínimos: `roles/storage.objectCreator` (solo en ese bucket),
+  `roles/bigquery.dataEditor` + `roles/bigquery.jobUser` (proyecto). Su
+  llave JSON vive en la VM en `/etc/nowcast-gdl/gcs-key.json` (600,
+  `nowcast:nowcast`) — **no está en git**, si hay que recrearla:
+  ```bash
+  gcloud iam service-accounts keys create /tmp/key.json \
+    --iam-account=nowcast-log-uploader@genial-post-502521-m2.iam.gserviceaccount.com
+  gcloud compute scp /tmp/key.json nowcast-gdl:/tmp/key.json \
+    --zone=us-central1-a --tunnel-through-iap
+  # luego por SSH: sudo mv /tmp/key.json /etc/nowcast-gdl/gcs-key.json && \
+  #   sudo chown nowcast:nowcast /etc/nowcast-gdl/gcs-key.json && \
+  #   sudo chmod 600 /etc/nowcast-gdl/gcs-key.json
+  ```
+
+**Dependencias** (en el venv de la app, no en el sistema — evita instalar
+el SDK completo de gcloud en un e2-micro de 1GB RAM):
+```bash
+sudo -u nowcast /opt/nowcast-gdl/venv/bin/pip install google-cloud-storage google-cloud-bigquery
+```
+
+**Cron** (`/etc/cron.d/nowcast-log-upload`, corre como `nowcast`, lunes 03:00 UTC ≈ domingo 21:00 GDL):
+```
+0 3 * * 1 nowcast /opt/nowcast-gdl/venv/bin/python3 /opt/nowcast-gdl/backend/deploy/weekly_log_upload.py >> /opt/nowcast-gdl/data/logs/weekly_upload.log 2>&1
+```
+
+**Consultar los datos** — directo en BigQuery, sin descargar nada:
+```sql
+SELECT frame_time, n_det, cell.id, cell.lat, cell.lon, cell.proj15
+FROM `genial-post-502521-m2.nowcast_diag.cycles`,
+     UNNEST(cells) AS cell
+WHERE cell.id = 107
+ORDER BY frame_time
+```
+
+**Correr manualmente / probar:**
+```bash
+sudo -u nowcast /opt/nowcast-gdl/venv/bin/python3 /opt/nowcast-gdl/backend/deploy/weekly_log_upload.py
+```
