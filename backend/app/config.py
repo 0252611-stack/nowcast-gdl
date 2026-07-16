@@ -12,6 +12,27 @@ POINTS: list[dict] = [
     {"id": "puerta_lomas",   "name": "Puerta Las Lomas",         "lat": 20.7054792, "lon": -103.4363111},
     {"id": "club_atlas",     "name": "Club Atlas Colomos",       "lat": 20.7143976, "lon": -103.4025069},
     {"id": "hogar_cabanas",  "name": "Hogar Cabañas",            "lat": 20.650890,  "lon": -103.39572},
+    # Sesión 15 (15-jul-2026) — 15 puntos estratégicos + 4 direcciones específicas,
+    # para acelerar la recolección de datos con mayor cobertura del AMG.
+    {"id": "punto_1",  "name": "Punto 1",  "lat": 20.677034,  "lon": -103.346984},   # Catedral GDL, centro
+    {"id": "punto_2",  "name": "Punto 2",  "lat": 20.6714793, "lon": -103.4410621},  # Parque Metropolitano, Zapopan
+    {"id": "punto_3",  "name": "Punto 3",  "lat": 20.6395117, "lon": -103.3090156},  # Jardín Hidalgo, Tlaquepaque
+    {"id": "punto_4",  "name": "Punto 4",  "lat": 20.6246256, "lon": -103.24242},    # Centro, Tonalá
+    {"id": "punto_5",  "name": "Punto 5",  "lat": 20.475623,  "lon": -103.4456882},  # Centro, Tlajomulco de Zúñiga
+    {"id": "punto_6",  "name": "Punto 6",  "lat": 20.7307838, "lon": -103.3879727},  # Zapopan Centro
+    {"id": "punto_7",  "name": "Punto 7",  "lat": 20.6024902, "lon": -103.4469054},  # Bugambilias, SO Zapopan
+    {"id": "punto_8",  "name": "Punto 8",  "lat": 20.6505195, "lon": -103.4013333},  # Plaza del Sol
+    {"id": "punto_9",  "name": "Punto 9",  "lat": 20.5190865, "lon": -103.178122},   # Centro, El Salto
+    {"id": "punto_10", "name": "Punto 10", "lat": 20.6270376, "lon": -103.4121672},  # Las Águilas, Zapopan
+    {"id": "punto_11", "name": "Punto 11", "lat": 20.6171935, "lon": -103.3515091},  # Miravalle, Guadalajara
+    {"id": "punto_12", "name": "Punto 12", "lat": 20.8016245, "lon": -103.4791946},  # Tesistán, norte Zapopan
+    {"id": "punto_13", "name": "Punto 13", "lat": 20.6747187, "lon": -103.3255216},  # Oblatos, este Guadalajara
+    {"id": "punto_14", "name": "Punto 14", "lat": 20.567017,  "lon": -103.4699635},  # Santa Anita, SO Tlajomulco
+    {"id": "punto_15", "name": "Punto 15", "lat": 20.6782083, "lon": -103.4482868},  # Ciudad Granja, oeste Zapopan
+    {"id": "catalunia_40",     "name": "Cataluña 40",       "lat": 20.7183089, "lon": -103.4171707},  # Puerta de Hierro, Zapopan
+    {"id": "bahia_acapulco",   "name": "Bahía de Acapulco", "lat": 20.6017382, "lon": -103.4159593},  # San Pedro Tlaquepaque
+    {"id": "oficina_ingredion","name": "Oficina Ingredion", "lat": 20.7105972, "lon": -103.4141243},  # Andares, Zapopan
+    {"id": "hella",            "name": "HELLA",             "lat": 20.6085621, "lon": -103.4042517},  # Edificio Connect, Tlaquepaque
 ]
 
 # --- Sitio del radar IAM (fuente: <lookAt> del doc.kml — constante en todos los frames) ---
