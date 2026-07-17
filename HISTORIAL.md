@@ -2098,6 +2098,26 @@ cooldown global (`_rate_limited_until`, 120s) en `_get_with_retry`:
 (un 429 no se reintenta; una segunda llamada durante el cooldown no llega
 a la red). **Tests:** 222/222 ✅ (221 + 1 nuevo).
 
-**Pendiente de este fix:** ambos fixes ya desplegados a la VM (`git pull`
-+ `systemctl restart nowcast-gdl`) — falta confirmar en producción que
-los 429 cesan definitivamente y el frontend deja el modo offline.
+**Confirmado en producción:** ambos fixes desplegados a la VM (`git pull`
++ `systemctl restart nowcast-gdl`, commits `460f17e` y `b3b018f`). Tras el
+segundo restart, `curl` a `/points/{id}/forecast` para varios puntos
+(`up_gdl`, `punto_1`, `hella`, `club_atlas`) devolvió HTTP 200 con
+pronóstico horario real (precipitación, temperatura, viento) — los 429
+cesaron y el incidente de "modo offline" quedó resuelto. Causa raíz
+completa: (1) 3 sitios servían Open-Meteo sin cache obligatorio, y (2) los
+fallos no se cacheaban, así que el propio mecanismo de reintentos
+sostenía el bloqueo — ambos corregidos.
+
+### Estado actual (fin de sesión 16)
+
+**Stack:** Backend Google Cloud (`e2-micro`, `us-central1-a`)
+`https://35-255-11-50.sslip.io` · Frontend Vercel
+`https://nowcast-gdl.vercel.app` · 23 puntos monitoreados. Incidente de
+Open-Meteo 429 / modo offline resuelto (cache obligatorio +
+circuit breaker global). 222 tests.
+
+**Pendiente:**
+- Con `cells[]`+`proj15`/`proj30` ya en el log, repetir el análisis de
+  trayectoria real vs. predicha tras acumular más días de datos.
+- Calibración fina con lluvia real de temporada (sigue vigente de
+  sesiones anteriores).
