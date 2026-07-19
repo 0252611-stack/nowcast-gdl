@@ -179,6 +179,15 @@ CELL_QUALITY_AGE_REF: int = 4      # age_frames en que age_score = 1.0
 # Penalización por ciclos sin match (celda parpadeante/ausente)
 CELL_QUALITY_MISSED_PENALTY: float = 0.15
 
+# --- Closing speed del ETA (Capa: dirección bloquea ETA, no solo confianza) ---
+# Velocidad mínima de acercamiento (componente radial hacia el punto) para
+# emitir un ETA. Por debajo, la celda no se está acercando de verdad
+# (movimiento lateral o alejándose) y el ETA distancia/velocidad es ficción.
+MIN_CLOSING_SPEED_KMH: float = 2.0
+# Horizonte máximo del ETA. Antes 240 min: un ETA de 3-4h por advección
+# lineal no es información, es ruido (la UI ya avisa que >30 min degrada).
+ETA_HORIZON_MINUTES: int = 120
+
 # --- Timeline de intensidad por punto (Etapa 5) ---
 # Pasos de tiempo en minutos para el backtrace semi-lagrangiano por punto.
 INTENSITY_TIMELINE_STEPS_MIN: tuple = (0, 15, 30, 45)

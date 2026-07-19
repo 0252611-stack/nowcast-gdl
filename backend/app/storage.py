@@ -338,6 +338,39 @@ def get_skill_metrics(conn: sqlite3.Connection) -> dict:
     }
 
 
+def get_confidence_calibration(conn: sqlite3.Connection) -> list[dict]:
+    """Curva de calibración empírica: confianza del motor → tasa real de acierto.
+
+    Agrupa las predicciones positivas verificadas (predicted_rain=1, outcome
+    hit/false_alarm) en 10 bins de confianza de ancho 0.1 y devuelve el hit
+    rate observado por bin — la "probabilidad real" de que una predicción con
+    esa confianza se cumpla, según el propio historial del sistema.
+
+    Devuelve [{"bin_lo", "bin_hi", "n", "hit_rate"}, ...] solo para bins con
+    datos, ordenados por bin_lo. El caller decide el n mínimo por bin.
+    """
+    rows = conn.execute(
+        """SELECT MIN(CAST(confidence * 10 AS INTEGER), 9) AS bin_idx,
+                  COUNT(*) AS n,
+                  SUM(CASE WHEN outcome = 'hit' THEN 1 ELSE 0 END) AS hits
+           FROM nowcast_predictions
+           WHERE verified_at_utc IS NOT NULL
+             AND predicted_rain = 1
+             AND confidence IS NOT NULL
+           GROUP BY bin_idx
+           ORDER BY bin_idx"""
+    ).fetchall()
+    return [
+        {
+            "bin_lo": round(bin_idx / 10.0, 1),
+            "bin_hi": round((bin_idx + 1) / 10.0, 1),
+            "n": n,
+            "hit_rate": round(hits / n, 3),
+        }
+        for bin_idx, n, hits in rows
+    ]
+
+
 def get_eta_stability(conn: sqlite3.Connection, hours: int = 6) -> list[dict]:
     """Estadísticas de variabilidad de la ETA para cada punto (últimas `hours` horas).
 

@@ -42,6 +42,7 @@ from app.sources.rainviewer import fetch_tile_url as fetch_rainviewer_url
 from app.storage import (
     add_point,
     delete_point,
+    get_confidence_calibration,
     get_eta_stability,
     get_latest_reading,
     get_predictions,
@@ -55,8 +56,51 @@ from app.storage import (
 )
 
 _RAINVIEWER_TTL = 300.0  # segundos entre llamadas a RainViewer
+_CALIBRATION_TTL = 3600.0  # segundos entre recomputos de la curva de calibración
+_CALIBRATION_MIN_N = 30  # mínimo de verificaciones por bin para usarlo
 
 log = logging.getLogger(__name__)
+
+
+def _get_calibration(app: "FastAPI") -> list[dict]:
+    """Tabla de calibración confianza→hit rate, cacheada con TTL de 1 hora."""
+    now = time.monotonic()
+    cached = app.state.calibration_cache
+    if cached is not None and now < cached[0]:
+        return cached[1]
+    try:
+        table = get_confidence_calibration(app.state.db)
+    except Exception as exc:
+        log.debug("Calibración no disponible: %s", exc)
+        table = cached[1] if cached is not None else []
+    app.state.calibration_cache = (now + _CALIBRATION_TTL, table)
+    return table
+
+
+def _prob_from_calibration(
+    confidence: float,
+    calibration: list[dict],
+    model_agreement: float | None,
+) -> float | None:
+    """Mapea la confianza del motor a probabilidad real observada.
+
+    Interpola linealmente el hit rate entre centros de bins con n >=
+    _CALIBRATION_MIN_N; fuera del rango cubierto usa el bin válido más
+    cercano (sin extrapolar). Sin bins válidos → model_agreement (o None).
+    """
+    valid = [b for b in calibration if b["n"] >= _CALIBRATION_MIN_N]
+    if not valid:
+        return model_agreement
+    centers = [((b["bin_lo"] + b["bin_hi"]) / 2.0, b["hit_rate"]) for b in valid]
+    if confidence <= centers[0][0]:
+        return centers[0][1]
+    if confidence >= centers[-1][0]:
+        return centers[-1][1]
+    for (c0, h0), (c1, h1) in zip(centers, centers[1:]):
+        if c0 <= confidence <= c1:
+            t = (confidence - c0) / (c1 - c0)
+            return round(h0 + t * (h1 - h0), 3)
+    return centers[-1][1]  # inalcanzable, por completitud
 
 
 def _serialize_tracked_cells(
@@ -147,6 +191,8 @@ async def lifespan(app: FastAPI):
     app.state.echo_contours_cache: tuple | None = None
     # Cache de predicción: (frame_time, result_dict) — advección semi-Lagrangiana
     app.state.prediction_cache: tuple | None = None
+    # Cache de calibración confianza→prob real: (expires_monotonic, tabla)
+    app.state.calibration_cache: tuple | None = None
     log.info("Nowcast GDL iniciado. Scheduler activo.")
     try:
         yield
@@ -391,6 +437,16 @@ async def get_radar(point_id: str):
                 ensemble_prob=ensemble_prob,
                 tracked_cells=state.tracked_cells if hasattr(state, "tracked_cells") else None,
             )
+
+            # Probabilidad empírica: hit rate histórico del bin de confianza
+            if (
+                nowcast is not None
+                and nowcast.eta_minutes is not None
+                and nowcast.confidence is not None
+            ):
+                nowcast.prob_rain = _prob_from_calibration(
+                    nowcast.confidence, _get_calibration(app), nowcast.model_agreement
+                )
 
             if nowcast is not None and nowcast.cell_lat is not None:
                 # Viento 700 hPa en el eco

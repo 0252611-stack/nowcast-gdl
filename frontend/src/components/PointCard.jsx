@@ -113,6 +113,32 @@ const s = {
     fontSize: "13px",
     fontWeight: 600,
   },
+  // Confianza media (0.3-0.5): mismo badge pero atenuado — el ETA es tentativo
+  etaBadgeSoft: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "6px",
+    padding: "5px 12px",
+    borderRadius: "8px",
+    background: `${theme.accentLight}88`,
+    border: `1px dashed ${theme.accent}55`,
+    color: "#A16207",
+    fontSize: "13px",
+    fontWeight: 500,
+  },
+  // Confianza baja (<0.3): "posible" en gris, sin minutos exactos
+  etaBadgeLow: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "6px",
+    padding: "5px 12px",
+    borderRadius: "8px",
+    background: theme.surfaceMuted,
+    border: `1px solid ${theme.borderMid}`,
+    color: theme.textMuted,
+    fontSize: "13px",
+    fontWeight: 500,
+  },
   tempRow: {
     display: "flex",
     gap: "12px",
@@ -374,30 +400,52 @@ export default function PointCard({ point, forecast, radar, nowcast, rainviewerU
             <SourceTag source="iam" />
           </div>
 
-          {nowcast && !nowcast.raining_now && nowcast.eta_minutes !== null && (
-            <div style={s.section}>
-              <span style={s.label}>Lluvia en</span>
-              <span
-                style={s.etaBadge}
-                title={`Tiempo Estimado de Llegada (ETA): el motor de nowcast calculó que la nube de lluvia más cercana tardará ~${nowcast.eta_minutes} minutos en llegar a este punto, usando el flujo óptico del radar y el viento a 700 hPa.`}
-              >
-                <ClockIcon size={14} color="#92400E" />
-                <span style={{ fontFamily: theme.fontMono, fontVariantNumeric: "tabular-nums" }}>
-                  {nowcast.eta_minutes} min
-                </span>
-              </span>
-              {nowcast.method === "cell_tracking" && nowcast.cell_id != null && (
-                <span
-                  style={s.cellTrackBadge}
-                  title={`Celda rastreada #${nowcast.cell_id} · edad ${nowcast.cell_age_minutes?.toFixed(1)} min · distancia al borde ${nowcast.leading_edge_distance_km?.toFixed(1)} km`}
-                >
-                  Celda #{nowcast.cell_id}
-                  {nowcast.cell_age_minutes != null && <> · {nowcast.cell_age_minutes.toFixed(1)} min</>}
-                </span>
-              )}
-              <SourceTag source="nowcast" />
-            </div>
-          )}
+          {nowcast && !nowcast.raining_now && nowcast.eta_minutes !== null && (() => {
+            // Escalones por confianza, alineados con el umbral 0.30 que el
+            // skill interno ya usa como frontera de "no confiable":
+            //   >=0.5 firme · 0.3-0.5 tentativo · <0.3 solo "posible", sin minutos
+            const conf = nowcast.confidence ?? 0
+            const tier = conf >= 0.5 ? "firm" : conf >= 0.3 ? "soft" : "low"
+            const pct = nowcast.prob_rain != null ? Math.round(nowcast.prob_rain * 100) : null
+            const pctText = pct != null ? ` · ~${pct}%` : ""
+            const probTitle = pct != null
+              ? ` De las predicciones históricas del sistema con esta confianza, ~${pct}% se cumplieron.`
+              : ""
+            return (
+              <div style={s.section}>
+                <span style={s.label}>{tier === "low" ? "Lluvia posible" : "Lluvia en"}</span>
+                {tier === "low" ? (
+                  <span
+                    style={s.etaBadgeLow}
+                    title={`El motor detectó una nube que podría llegar, pero con confianza baja (${Math.round(conf * 100)}%) — normalmente indica una celda lejana o cuya trayectoria no apunta claramente a este punto. No se muestra un minuto exacto porque sería poco fiable.${probTitle}`}
+                  >
+                    <CloudIcon size={14} color={theme.textMuted} />
+                    <span>{pct != null ? `~${pct}%` : "baja confianza"}</span>
+                  </span>
+                ) : (
+                  <span
+                    style={tier === "firm" ? s.etaBadge : s.etaBadgeSoft}
+                    title={`Tiempo Estimado de Llegada (ETA): el motor de nowcast calculó que la nube de lluvia más cercana tardará ~${nowcast.eta_minutes} minutos en llegar a este punto, usando el flujo óptico del radar y el viento a 700 hPa.${probTitle}`}
+                  >
+                    <ClockIcon size={14} color={tier === "firm" ? "#92400E" : "#A16207"} />
+                    <span style={{ fontFamily: theme.fontMono, fontVariantNumeric: "tabular-nums" }}>
+                      {tier === "soft" ? "~" : ""}{nowcast.eta_minutes} min{pctText}
+                    </span>
+                  </span>
+                )}
+                {nowcast.method === "cell_tracking" && nowcast.cell_id != null && (
+                  <span
+                    style={s.cellTrackBadge}
+                    title={`Celda rastreada #${nowcast.cell_id} · edad ${nowcast.cell_age_minutes?.toFixed(1)} min · distancia al borde ${nowcast.leading_edge_distance_km?.toFixed(1)} km`}
+                  >
+                    Celda #{nowcast.cell_id}
+                    {nowcast.cell_age_minutes != null && <> · {nowcast.cell_age_minutes.toFixed(1)} min</>}
+                  </span>
+                )}
+                <SourceTag source="nowcast" />
+              </div>
+            )
+          })()}
         </div>
 
         {/* Mini-mapa del eco causante cuando hay ETA y posición del eco */}

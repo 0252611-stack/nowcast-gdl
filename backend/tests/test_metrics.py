@@ -372,3 +372,90 @@ def test_metrics_endpoint_verified_zero_when_empty(api_client):
     resp = c.get("/metrics")
     assert resp.json()["verified"] == 0
     assert resp.json()["overall"]["pod"] is None
+
+
+# ---------------------------------------------------------------------------
+# get_confidence_calibration + _prob_from_calibration (probabilidad empírica)
+# ---------------------------------------------------------------------------
+
+from app.main import _prob_from_calibration  # noqa: E402
+from app.storage import get_confidence_calibration  # noqa: E402
+
+
+def _insert_calib_rows(db, confidence: float, outcome: str, n: int) -> None:
+    """Inserta n predicciones positivas verificadas con esa confianza/outcome."""
+    for _ in range(n):
+        db.execute(
+            """INSERT INTO nowcast_predictions
+               (point_id, generated_at_utc, raining_now, predicted_rain,
+                eta_minutes, confidence, method, horizon_minutes,
+                target_time_utc, verified_at_utc, outcome)
+               VALUES ('centro', ?, 0, 1, 30, ?, 'advection', 60, ?, ?, ?)""",
+            (T0.isoformat(), confidence, T_VERIFY.isoformat(),
+             T_VERIFY.isoformat(), outcome),
+        )
+    db.commit()
+
+
+class TestConfidenceCalibration:
+    def test_empty_table_returns_empty_list(self, db):
+        assert get_confidence_calibration(db) == []
+
+    def test_bins_n_and_hit_rate(self, db):
+        # bin 2 (0.2-0.3): 40 filas, 10 hits → hit_rate 0.25
+        _insert_calib_rows(db, 0.25, "hit", 10)
+        _insert_calib_rows(db, 0.25, "false_alarm", 30)
+        # bin 6 (0.6-0.7): 50 filas, 35 hits → hit_rate 0.7
+        _insert_calib_rows(db, 0.65, "hit", 35)
+        _insert_calib_rows(db, 0.65, "false_alarm", 15)
+        table = get_confidence_calibration(db)
+        assert len(table) == 2
+        b2, b6 = table
+        assert (b2["bin_lo"], b2["bin_hi"], b2["n"], b2["hit_rate"]) == (0.2, 0.3, 40, 0.25)
+        assert (b6["bin_lo"], b6["bin_hi"], b6["n"], b6["hit_rate"]) == (0.6, 0.7, 50, 0.7)
+
+    def test_confidence_one_lands_in_bin_9(self, db):
+        _insert_calib_rows(db, 1.0, "hit", 5)
+        table = get_confidence_calibration(db)
+        assert len(table) == 1
+        assert (table[0]["bin_lo"], table[0]["bin_hi"]) == (0.9, 1.0)
+
+    def test_only_verified_positive_predictions_counted(self, db):
+        _insert_calib_rows(db, 0.5, "hit", 3)
+        # Fila NO verificada (verified_at_utc NULL) — no debe contar
+        db.execute(
+            """INSERT INTO nowcast_predictions
+               (point_id, generated_at_utc, raining_now, predicted_rain,
+                eta_minutes, confidence, method, horizon_minutes, target_time_utc)
+               VALUES ('centro', ?, 0, 1, 30, 0.5, 'advection', 60, ?)""",
+            (T0.isoformat(), T_FUTURE.isoformat()),
+        )
+        db.commit()
+        assert get_confidence_calibration(db)[0]["n"] == 3
+
+
+class TestProbFromCalibration:
+    _TABLE = [
+        {"bin_lo": 0.2, "bin_hi": 0.3, "n": 100, "hit_rate": 0.2},
+        {"bin_lo": 0.4, "bin_hi": 0.5, "n": 5, "hit_rate": 0.9},   # n<30 → ignorado
+        {"bin_lo": 0.6, "bin_hi": 0.7, "n": 100, "hit_rate": 0.6},
+    ]
+
+    def test_interpolates_between_valid_bin_centers(self):
+        # Centros válidos: 0.25 (0.2) y 0.65 (0.6). En medio (0.45): 0.4
+        assert _prob_from_calibration(0.45, self._TABLE, None) == pytest.approx(0.4)
+
+    def test_low_n_bin_is_ignored(self):
+        # Sin el filtro, conf=0.45 caería en el bin de hit_rate 0.9
+        assert _prob_from_calibration(0.45, self._TABLE, None) != pytest.approx(0.9)
+
+    def test_below_range_clamps_to_first_valid_bin(self):
+        assert _prob_from_calibration(0.05, self._TABLE, None) == pytest.approx(0.2)
+
+    def test_above_range_clamps_to_last_valid_bin(self):
+        assert _prob_from_calibration(0.95, self._TABLE, None) == pytest.approx(0.6)
+
+    def test_no_valid_bins_falls_back_to_model_agreement(self):
+        sparse = [{"bin_lo": 0.4, "bin_hi": 0.5, "n": 5, "hit_rate": 0.9}]
+        assert _prob_from_calibration(0.45, sparse, 0.33) == 0.33
+        assert _prob_from_calibration(0.45, sparse, None) is None

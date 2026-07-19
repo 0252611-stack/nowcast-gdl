@@ -47,7 +47,7 @@ def _project_cell_to_point(
     motion_field: "np.ndarray | None" = None,
     wind_speed: float = 0.0,
     wind_dir: float = 0.0,
-    horizon_minutes: int = 240,
+    horizon_minutes: int | None = None,
 ) -> dict | None:
     """Proyecta una celda rastreada hacia un punto y devuelve ETA + metadatos.
 
@@ -58,6 +58,8 @@ def _project_cell_to_point(
     Devuelve {eta_minutes, confidence, edge_dist_km, speed_kmh, bearing_deg}
     o None si la celda no apunta al punto o no llega en el horizonte.
     """
+    if horizon_minutes is None:
+        horizon_minutes = config.ETA_HORIZON_MINUTES
     if cell.velocity_kmh < 1.0:
         return None
 
@@ -136,7 +138,7 @@ def compute_cell_etas(
         for pt in points:
             proj = _project_cell_to_point(
                 cell, pt["lat"], pt["lon"], bounds, motion_field,
-                wind_speed=0.0, wind_dir=0.0, horizon_minutes=240,
+                wind_speed=0.0, wind_dir=0.0, horizon_minutes=config.ETA_HORIZON_MINUTES,
             )
             if proj is None:
                 continue
@@ -160,7 +162,7 @@ def estimate_arrival(
     forecast: PointForecast,
     frames: list[tuple[bytes, datetime]],
     bounds: dict[str, float] | None,
-    horizon_minutes: int = 240,
+    horizon_minutes: int | None = None,
     motion_field: np.ndarray | None = None,
     ensemble_prob: float | None = None,
     prev_trend_ema: float | None = None,
@@ -183,6 +185,8 @@ def estimate_arrival(
       cell_tracking       — ETA por borde de ataque de celda rastreada (Capa 2+3)
       advection           — ETA por optical flow + viento 700 hPa (fallback)
     """
+    if horizon_minutes is None:
+        horizon_minutes = config.ETA_HORIZON_MINUTES
     generated_at = datetime.now(tz=config.TZ_LOCAL)
 
     # Timeline de intensidad (computable en cualquier momento después de tener frames)

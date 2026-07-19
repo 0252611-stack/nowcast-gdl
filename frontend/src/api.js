@@ -40,7 +40,9 @@ export async function getForecast(pointId) {
  * @typedef {{ minutes: number, dbz: number, category: string }} IntensityStep
  *
  * @typedef {{ point_id: string, raining_now: boolean, eta_minutes: number|null,
- *   confidence: number|null, horizon_minutes: number, cell_speed_kmh: number|null,
+ *   confidence: number|null,
+ *   prob_rain: number|null,
+ *   horizon_minutes: number, cell_speed_kmh: number|null,
  *   cell_bearing_deg: number|null, cell_lat: number|null, cell_lon: number|null,
  *   bearing_cell_to_point_deg: number|null,
  *   wind_echo_bearing_deg: number|null, wind_echo_speed_kmh: number|null,

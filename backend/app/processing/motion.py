@@ -522,22 +522,27 @@ def project_cell(
 ) -> dict:
     """Proyecta la ETA de la celda al punto con cross-check contra viento 700 hPa.
 
+    El ETA se calcula con la velocidad de ACERCAMIENTO (closing speed): la
+    componente radial de la velocidad de la celda hacia el punto,
+    speed * cos(Δ(rumbo, dirección_al_punto)). Una celda alejándose tiene
+    closing speed negativa y una lateral ~0 — ninguna produce ETA, aunque su
+    velocidad absoluta sea alta. Antes se usaba distancia/velocidad absoluta y
+    la dirección solo bajaba la confianza, lo que generaba "lloverá en X min"
+    con nubes que nunca iban a llegar (FAR ~50% medido en producción).
+
     Devuelve {"eta_minutes": int|None, "confidence": float}.
-    eta=None si velocidad≈0 o si ETA supera el horizonte.
+    eta=None si velocidad≈0, closing speed < MIN_CLOSING_SPEED_KMH, o si el
+    ETA supera el horizonte.
     """
     if motion_speed_kmh < 0.1:
         return {"eta_minutes": None, "confidence": 0.0}
 
-    eta_min = round(cell_distance_km / motion_speed_kmh * 60)
-
-    if eta_min > horizon_minutes:
-        return {"eta_minutes": None, "confidence": 0.0}
+    def _angle_diff_deg(a_deg: float, b_deg: float) -> float:
+        d = (a_deg - b_deg + 360) % 360
+        return 360 - d if d > 180 else d
 
     def _cos_diff(a_deg: float, b_deg: float) -> float:
-        d = (a_deg - b_deg + 360) % 360
-        if d > 180:
-            d = 360 - d
-        return max(0.0, math.cos(math.radians(d)))
+        return max(0.0, math.cos(math.radians(_angle_diff_deg(a_deg, b_deg))))
 
     # wind_700 da DE DÓNDE viene → se mueve HACIA (dir+180)
     wind_toward = (wind_700_dir_deg + 180) % 360
@@ -546,10 +551,23 @@ def project_cell(
     wind_magnitude_factor = min(1.0, wind_700_speed_kmh / 20.0)
     conf_wind = _cos_diff(motion_bearing_deg, wind_toward) * wind_magnitude_factor
 
-    # ¿El campo se dirige hacia el punto?
-    conf_dir = _cos_diff(motion_bearing_deg, bearing_cell_to_point_deg)
+    # Coseno CRUDO (sin clamp) rumbo vs dirección al punto: negativo = se aleja.
+    raw_cos_dir = math.cos(
+        math.radians(_angle_diff_deg(motion_bearing_deg, bearing_cell_to_point_deg))
+    )
+    closing_speed_kmh = motion_speed_kmh * raw_cos_dir
 
+    # ¿El campo se dirige hacia el punto? (versión clampeada para la confianza)
+    conf_dir = max(0.0, raw_cos_dir)
     confidence = round(0.5 * conf_wind + 0.5 * conf_dir, 3)
+
+    if closing_speed_kmh < config.MIN_CLOSING_SPEED_KMH:
+        return {"eta_minutes": None, "confidence": confidence}
+
+    eta_min = round(cell_distance_km / closing_speed_kmh * 60)
+
+    if eta_min > horizon_minutes:
+        return {"eta_minutes": None, "confidence": confidence}
 
     return {"eta_minutes": int(eta_min), "confidence": confidence}
 

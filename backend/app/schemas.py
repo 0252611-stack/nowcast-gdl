@@ -143,6 +143,12 @@ class NowcastResult(BaseModel):
     raining_now: bool = Field(..., description="dBZ > umbral operativo (18) en el punto")
     eta_minutes: int | None = Field(None, ge=0, description="Minutos hasta llegada; None si no se espera lluvia")
     confidence: float | None = Field(None, ge=0, le=1)
+    prob_rain: float | None = Field(
+        None, ge=0, le=1,
+        description="Probabilidad empírica de que esta predicción se cumpla, "
+        "calibrada con el historial verificado (hit rate del bin de confianza). "
+        "None si no hay suficiente historial.",
+    )
     horizon_minutes: int = Field(60, description="Ventana de proyección (15/30/60)")
     cell_speed_kmh: float | None = Field(None, ge=0, description="Velocidad de la celda")
     cell_bearing_deg: float | None = Field(None, ge=0, le=360, description="Rumbo de la celda")

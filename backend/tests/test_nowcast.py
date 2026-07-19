@@ -190,7 +190,82 @@ def test_project_cell_horizon_exceeded():
         horizon_minutes=60,
     )
     assert result["eta_minutes"] is None
-    assert result["confidence"] == pytest.approx(0.0)
+    # Desde el fix de closing speed, la confianza calculada se devuelve aunque
+    # el ETA exceda el horizonte (dirección perfecta aquí → 1.0); antes se
+    # aplanaba a 0.0, perdiendo información para el caller.
+    assert result["confidence"] == pytest.approx(1.0)
+
+
+class TestProjectCellClosingSpeed:
+    """Fix de closing speed: el ETA usa la componente radial de la velocidad
+    hacia el punto, no la magnitud. Celda alejándose o lateral → sin ETA."""
+
+    _COMMON = dict(
+        cell_distance_km=30.0,
+        motion_speed_kmh=30.0,
+        wind_700_speed_kmh=40.0,
+        horizon_minutes=120,
+    )
+
+    def test_moving_directly_away_no_eta(self):
+        """Celda al oeste del punto moviéndose al oeste (se aleja) → eta None."""
+        result = project_cell(
+            GDL_LAT, GDL_LON,
+            motion_bearing_deg=270.0,          # se mueve al W
+            bearing_cell_to_point_deg=90.0,    # el punto queda al E
+            wind_700_dir_deg=90.0,             # viento del E → hacia W (alineado)
+            **self._COMMON,
+        )
+        assert result["eta_minutes"] is None
+
+    def test_moving_perpendicular_no_eta(self):
+        """Movimiento lateral (90° respecto al punto) → closing speed ~0 → eta None."""
+        result = project_cell(
+            GDL_LAT, GDL_LON,
+            motion_bearing_deg=0.0,            # se mueve al N
+            bearing_cell_to_point_deg=90.0,    # el punto queda al E
+            wind_700_dir_deg=180.0,
+            **self._COMMON,
+        )
+        assert result["eta_minutes"] is None
+
+    def test_head_on_same_eta_as_before(self):
+        """De frente (rumbo == dirección al punto): eta = dist/speed, igual que antes."""
+        result = project_cell(
+            GDL_LAT, GDL_LON,
+            motion_bearing_deg=90.0,
+            bearing_cell_to_point_deg=90.0,
+            wind_700_dir_deg=270.0,            # viento del W → hacia E (alineado)
+            **self._COMMON,
+        )
+        # 30 km / 30 km/h = 60 min
+        assert result["eta_minutes"] == 60
+
+    def test_diagonal_60_deg_doubles_eta(self):
+        """A 60° del punto: closing = speed*cos(60°) = mitad → ETA se duplica."""
+        result = project_cell(
+            GDL_LAT, GDL_LON,
+            motion_bearing_deg=30.0,           # 60° respecto a la dirección al punto
+            bearing_cell_to_point_deg=90.0,
+            wind_700_dir_deg=210.0,
+            **self._COMMON,
+        )
+        # 30 km / (30*cos60°=15 km/h) = 120 min
+        assert result["eta_minutes"] == 120
+
+    def test_slow_closing_speed_below_floor_no_eta(self):
+        """Closing speed < MIN_CLOSING_SPEED_KMH (2 km/h) → eta None aunque avance."""
+        result = project_cell(
+            GDL_LAT, GDL_LON,
+            cell_distance_km=10.0,
+            motion_speed_kmh=1.9,              # de frente pero por debajo del piso
+            motion_bearing_deg=90.0,
+            bearing_cell_to_point_deg=90.0,
+            wind_700_speed_kmh=40.0,
+            wind_700_dir_deg=270.0,
+            horizon_minutes=600,
+        )
+        assert result["eta_minutes"] is None
 
 
 def test_project_cell_zero_speed():
