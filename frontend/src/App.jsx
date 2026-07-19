@@ -23,10 +23,11 @@ import {
 
 const REFRESH_INTERVAL_MS = 90_000
 
-// Puntos "Punto 1".."Punto 15": solo para recolectar datos (más cobertura del
-// AMG), no son relevantes para el usuario final — se excluyen del dashboard
-// de inicio pero siguen monitoreados por el scheduler y visibles en /mapa y /admin.
-const HIDDEN_ON_HOME = /^punto_\d+$/
+// Puntos "Punto 1".."Punto 15" y el anillo exterior "ext_*" (fuera de la ZMG,
+// sesión 17): solo para recolectar datos/análisis, no son relevantes para el
+// usuario final — se excluyen del dashboard de inicio pero siguen
+// monitoreados por el scheduler y visibles en /mapa y /admin.
+const HIDDEN_ON_HOME = /^(punto_\d+|ext_)/
 
 function fmtDatetime(isoStr) {
   if (!isoStr) return "—"

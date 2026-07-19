@@ -33,6 +33,31 @@ POINTS: list[dict] = [
     {"id": "bahia_acapulco",   "name": "Bahía de Acapulco", "lat": 20.6017382, "lon": -103.4159593},  # San Pedro Tlaquepaque
     {"id": "oficina_ingredion","name": "Oficina Ingredion", "lat": 20.7105972, "lon": -103.4141243},  # Andares, Zapopan
     {"id": "hella",            "name": "HELLA",             "lat": 20.6085621, "lon": -103.4042517},  # Edificio Connect, Tlaquepaque
+    # Sesión 17 (17-jul-2026) — anillo exterior fuera de la ZMG, 18 cabeceras
+    # municipales reales dentro del rango útil del radar (~100 km). Prefijo
+    # "ext_" → oculto del dashboard de inicio (ver HIDDEN_ON_HOME en App.jsx),
+    # igual que punto_1..15: solo para análisis (skill/trayectoria), no son
+    # direcciones de usuario. Coordenadas verificadas por búsqueda web
+    # (cabecera municipal/plaza principal), espaciamiento ≥15 km entre sí y
+    # respecto a los 23 puntos anteriores (ver análisis de sesión 17).
+    {"id": "ext_ixtlahuacan_rio", "name": "Ixtlahuacán del Río", "lat": 20.8641,   "lon": -103.2383},   # 26 km NE
+    {"id": "ext_san_cristobal",   "name": "San Cristóbal de la Barranca", "lat": 21.044444, "lon": -103.429167},  # 41 km N
+    {"id": "ext_el_arenal",       "name": "El Arenal",         "lat": 20.775556, "lon": -103.693333},  # 34 km WNW
+    {"id": "ext_zapotlanejo",     "name": "Zapotlanejo",       "lat": 20.6222,   "lon": -103.0683},    # 34 km E
+    {"id": "ext_acatlan_juarez",  "name": "Acatlán de Juárez", "lat": 20.4205,   "lon": -103.5911},    # 36 km SW
+    {"id": "ext_cuquio",          "name": "Cuquío",            "lat": 20.927586, "lon": -103.023046},  # 47 km NE
+    {"id": "ext_chapala",         "name": "Chapala",           "lat": 20.29028,  "lon": -103.19194},   # 47 km SSE
+    {"id": "ext_tequila",         "name": "Tequila",           "lat": 20.882778, "lon": -103.836667},  # 52 km WNW
+    {"id": "ext_zapotlan_rey",    "name": "Zapotlán del Rey",  "lat": 20.46589,  "lon": -102.92148},   # 54 km ESE
+    {"id": "ext_cocula",          "name": "Cocula",            "lat": 20.365389, "lon": -103.822775},  # 57 km SW
+    {"id": "ext_tototlan",        "name": "Tototlán",          "lat": 20.542257, "lon": -102.793381},  # 63 km ESE
+    {"id": "ext_ameca",           "name": "Ameca",             "lat": 20.547778, "lon": -104.047222},  # 70 km WSW
+    {"id": "ext_etzatlan",       "name": "Etzatlán",          "lat": 20.764722, "lon": -104.080556},  # 73 km W
+    {"id": "ext_ocotlan",         "name": "Ocotlán",           "lat": 20.3553,   "lon": -102.77358},   # 73 km ESE
+    {"id": "ext_yahualica",       "name": "Yahualica de González Gallo", "lat": 21.181667, "lon": -102.890556},  # 76 km NE
+    {"id": "ext_hostotipaquillo", "name": "Hostotipaquillo",   "lat": 21.058056, "lon": -104.051389},  # 81 km WNW
+    {"id": "ext_atotonilco_alto", "name": "Atotonilco el Alto", "lat": 20.5502447, "lon": -102.5081224}, # 92 km E
+    {"id": "ext_la_barca",        "name": "La Barca",          "lat": 20.276940, "lon": -102.548890},  # 98 km ESE
 ]
 
 # --- Sitio del radar IAM (fuente: <lookAt> del doc.kml — constante en todos los frames) ---
@@ -131,8 +156,12 @@ DIAG_LOG_RETENTION_DAYS: int = int(os.getenv("DIAG_LOG_RETENTION_DAYS", "180"))
 # arriba. Si algo dispara el ritmo de crecimiento sin que nadie lo note (ej.
 # un bug de tracking que multiplique las celdas detectadas por ciclo), esto
 # evita que el disco se llene antes de que el recorte por días vuelva a bajarlo.
-# No debería activarse en operación normal. Default 2 GB.
-DIAG_LOG_MAX_BYTES: int = int(os.getenv("DIAG_LOG_MAX_BYTES", str(2 * 1024 * 1024 * 1024)))
+# No debería activarse en operación normal. Default 3 GB (subido de 2GB en
+# sesión 17 al pasar de 23 a 41 puntos: el registro por punto en el JSONL
+# ["points[]"] ya cruzaba el tope de 2GB/180d en temporada de lluvia activa
+# con >10 celdas simultáneas — ver análisis de sesión 17. Hay ~23GB libres
+# medidos en la VM, sobra margen).
+DIAG_LOG_MAX_BYTES: int = int(os.getenv("DIAG_LOG_MAX_BYTES", str(3 * 1024 * 1024 * 1024)))
 # Retención de radar_frames/point_readings en SQLite (horas). point_readings
 # no tenía purga propia — sin esto crecía sin límite (una fila por punto/ciclo).
 READINGS_RETENTION_HOURS: int = 24
