@@ -6,6 +6,7 @@ import asyncio
 import io
 import json
 import logging
+import math
 import sqlite3
 import time
 from dataclasses import dataclass, field
@@ -318,10 +319,26 @@ async def run_radar_loop(conn: sqlite3.Connection, state: RadarState) -> None:
                             except Exception as exc:
                                 log.debug("Trajectory wind no disponible: %s", exc)
                         save_prediction(conn, result)
+                        # Closing speed de la causante (mismo cálculo que
+                        # project_cell): componente radial hacia el punto.
+                        # Negativa = se aleja. Con el gate de closing speed,
+                        # toda entrada con eta_min debería traer >= 2.0 —
+                        # esto lo hace verificable en el JSONL sin recalcular
+                        # rumbos a mano.
+                        _closing_spd = None
+                        if (
+                            result.cell_speed_kmh is not None
+                            and result.cell_bearing_deg is not None
+                            and result.bearing_cell_to_point_deg is not None
+                        ):
+                            _d = abs(((result.cell_bearing_deg - result.bearing_cell_to_point_deg + 180) % 360) - 180)
+                            _closing_spd = round(result.cell_speed_kmh * math.cos(math.radians(_d)), 1)
                         _point_diag.append({
                             "id": pt["id"],
                             "method": result.method,
                             "eta_min": result.eta_minutes,
+                            "cell_id": result.cell_id,
+                            "closing_spd": _closing_spd,
                             "conf": round(result.confidence, 3) if result.confidence is not None else None,
                             "led_km": round(result.leading_edge_distance_km, 1) if result.leading_edge_distance_km is not None else None,
                             "cell_spd": round(result.cell_speed_kmh, 1) if result.cell_speed_kmh is not None else None,
